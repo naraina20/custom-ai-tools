@@ -20,6 +20,8 @@ import {
   Home,
 } from 'lucide-react';
 
+import { NotificationBell } from './NotificationPanel';
+
 interface AppShellProps {
   children: React.ReactNode;
   onOpenCreateTool?: () => void;
@@ -45,16 +47,16 @@ export function AppShell({ children, onOpenCreateTool }: AppShellProps) {
       {/* Desktop Sidebar */}
       <aside className="hidden md:flex flex-col w-64 border-r border-slate-800/80 bg-slate-950/60 backdrop-blur-xl shrink-0">
         {/* Brand Area */}
-        <div className="h-16 flex items-center justify-between px-5 border-b border-slate-800/80">
-          <Link href="/" className="flex items-center gap-3 group">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-500 via-indigo-600 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-500/25 group-hover:scale-105 transition-transform duration-200">
-              <Zap className="w-5 h-5 text-white" />
+        <div className="h-16 flex items-center px-4 border-b border-slate-800/80">
+          <Link href="/" className="flex items-center gap-2.5 group min-w-0">
+            <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-indigo-500 via-indigo-600 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-500/25 group-hover:scale-105 transition-transform duration-200 shrink-0">
+              <Zap className="w-4 h-4 text-white" />
             </div>
-            <div>
-              <span className="font-bold text-base tracking-tight bg-gradient-to-r from-white via-slate-100 to-slate-400 bg-clip-text text-transparent">
+            <div className="min-w-0">
+              <span className="font-bold text-sm tracking-tight bg-gradient-to-r from-white via-slate-100 to-slate-400 bg-clip-text text-transparent truncate block">
                 Gravita AI
               </span>
-              <span className="block text-[10px] text-indigo-400 font-medium -mt-1 tracking-wider uppercase">
+              <span className="block text-[9px] text-indigo-400 font-medium -mt-1 tracking-wider uppercase">
                 Gateway &amp; Tax
               </span>
             </div>
@@ -336,6 +338,58 @@ export function AppShell({ children, onOpenCreateTool }: AppShellProps) {
 
       {/* Main Content Viewport */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+        {/* Desktop Top Header Bar (Outside the sidebar, on the right) */}
+        <header className="hidden md:flex h-16 border-b border-slate-800/80 bg-slate-950/60 backdrop-blur-xl px-8 items-center justify-between shrink-0 z-20">
+          <div className="flex items-center gap-3">
+            <span className="text-xs font-semibold text-slate-300">
+              Autonomous AI Tools &amp; Agent Systems
+            </span>
+            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              HITL Engine Active
+            </span>
+          </div>
+
+          <div className="flex items-center gap-4">
+            {onOpenCreateTool && (
+              <button
+                onClick={onOpenCreateTool}
+                className="inline-flex items-center gap-1.5 py-1.5 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs shadow-md shadow-indigo-600/20 transition-all active:scale-[0.98]"
+              >
+                <PlusCircle className="w-3.5 h-3.5" />
+                <span>Create AI Tool</span>
+              </button>
+            )}
+
+            {/* Notification Bell outside sidebar on the header */}
+            <NotificationBell />
+
+            <div className="h-4 w-px bg-slate-800" />
+
+            {isSignedIn ? (
+              <div className="flex items-center gap-2.5">
+                <UserButton />
+                <div className="hidden lg:block text-left">
+                  <p className="text-xs font-medium text-slate-200 leading-none">
+                    {user?.fullName || 'Active User'}
+                  </p>
+                  <p className="text-[10px] text-slate-400 font-mono mt-0.5 leading-none">
+                    {user?.primaryEmailAddress?.emailAddress}
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <Link
+                  href="/sign-in"
+                  className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition-colors"
+                >
+                  Log In
+                </Link>
+              </div>
+            )}
+          </div>
+        </header>
         {/* Mobile Header Bar */}
         <header className="md:hidden h-14 border-b border-slate-800/80 bg-slate-950/70 backdrop-blur-md px-4 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2.5">
@@ -350,16 +404,19 @@ export function AppShell({ children, onOpenCreateTool }: AppShellProps) {
             </span>
           </div>
 
-          {isSignedIn ? (
-            <UserButton />
-          ) : (
-            <Link
-              href="/sign-in"
-              className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition-colors"
-            >
-              Log In
-            </Link>
-          )}
+          <div className="flex items-center gap-2">
+            <NotificationBell />
+            {isSignedIn ? (
+              <UserButton />
+            ) : (
+              <Link
+                href="/sign-in"
+                className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition-colors"
+              >
+                Log In
+              </Link>
+            )}
+          </div>
         </header>
 
         {/* Primary Page Canvas */}

@@ -11,8 +11,22 @@ class GenerateSchemaRequestSerializer(serializers.Serializer):
 
 
 class GeneratedSchemaResponseSerializer(serializers.Serializer):
-    title = serializers.CharField(max_length=255)
-    description = serializers.CharField()
+    fallback_triggered = serializers.BooleanField(default=False)
+    fallback_reason = serializers.CharField(allow_null=True, required=False, default=None)
+    fallback_alternatives = serializers.ListField(
+        child=serializers.CharField(),
+        required=False,
+        default=list
+    )
+    add_gmail_oauth_flag = serializers.BooleanField(default=False)
+    google_products_detected = serializers.ListField(
+        child=serializers.CharField(),
+        required=False,
+        default=list
+    )
+    google_auth_flow_required = serializers.CharField(required=False, default="none")
+    title = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    description = serializers.CharField(required=False, allow_blank=True)
     requires_oauth = serializers.BooleanField(default=False)
     oauth_provider = serializers.ChoiceField(
         choices=[('google', 'Google'), ('github', 'GitHub'), ('none', 'None')],
@@ -21,6 +35,36 @@ class GeneratedSchemaResponseSerializer(serializers.Serializer):
     requires_hitl = serializers.BooleanField(default=False)
     form_schema = serializers.DictField(default=dict)
     api_config = serializers.DictField(required=False, default=dict)
+
+
+class GoogleProductCapabilitySerializer(serializers.ModelSerializer):
+    class Meta:
+        from .models import GoogleProductCapability
+        model = GoogleProductCapability
+        fields = '__all__'
+
+
+class SharedUserAssetSerializer(serializers.ModelSerializer):
+    class Meta:
+        from .models import SharedUserAsset
+        model = SharedUserAsset
+        fields = [
+            'id',
+            'user_id',
+            'google_file_or_folder_id',
+            'asset_name',
+            'mime_type',
+            'product_name',
+            'delegation_type',
+            'service_account_email',
+            'is_verified',
+            'verified_at',
+            'last_error',
+            'metadata',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'service_account_email', 'verified_at', 'last_error', 'created_at', 'updated_at']
 
 
 class UserToolDeploymentSerializer(serializers.ModelSerializer):
@@ -68,6 +112,9 @@ class CustomToolSerializer(serializers.ModelSerializer):
             'requires_oauth',
             'oauth_provider',
             'requires_hitl',
+            'add_gmail_oauth_flag',
+            'google_products',
+            'google_auth_mode',
             'form_schema',
             'api_config',
             'webhook_secret',
@@ -105,9 +152,13 @@ class CustomToolPublicSerializer(serializers.ModelSerializer):
             'description',
             'slug',
             'author_id',
+            'is_public',
             'requires_oauth',
             'oauth_provider',
             'requires_hitl',
+            'add_gmail_oauth_flag',
+            'google_products',
+            'google_auth_mode',
             'form_schema',
             'created_at',
         ]

@@ -549,6 +549,19 @@ class PayloadExtractorTool:
         return extracted
 
 
+class GoogleActionTool:
+    """
+    Universal Google Product Action Tool.
+    Connects to 7 core Google products: Gmail, Calendar, Docs, Drive, Forms, Meet, Sheets.
+    Executes via execute_google_action and respects the Shared Service Account Asset Quarantine Strategy.
+    """
+
+    @classmethod
+    def execute_plan_item(cls, item: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        from tools.services.google_executor import GoogleExecutorService
+        return GoogleExecutorService.execute_google_plan(item, context or {})
+
+
 GENERAL_TOOLS_REGISTRY: Dict[str, Dict[str, Any]] = {
     "send_email": {
         "name": "send_email",
@@ -736,6 +749,52 @@ GENERAL_TOOLS_REGISTRY: Dict[str, Dict[str, Any]] = {
         "input_types": ["webhook_payload"],
         "capabilities": ["webhook_parsing", "data_extraction"],
         "prompt_instruction": "Recursively scans deeply nested JSON payloads to extract client details, invoice numbers, amounts, and metadata.",
+    },
+    "google_action": {
+        "name": "google_action",
+        "title": "Google Products Universal Action",
+        "type": "action",
+        "description": "Executes API actions across 7 core Google products (Gmail, Calendar, Docs, Drive, Forms, Meet, Sheets) via the Universal API Execution Engine. Respects capability limits (e.g. Gmail only supports gmail.send).",
+        "input_types": ["package_product_name", "api_version", "target_resource_path", "method_name", "kwargs"],
+        "capabilities": ["google_integration", "drive", "sheets", "docs", "gmail", "calendar", "forms", "meet"],
+        "prompt_instruction": "Execute an API action against Google products (Gmail, Calendar, Docs, Drive, Forms, Meet, Sheets).",
+        "supported_execution_modes": ["single", "per_item"],
+        "required_item_fields": ["package_product_name", "method_name"],
+        "executor": GoogleActionTool.execute_plan_item,
+        "schema_instructions": (
+            "- Execution Modes: 'single' or 'per_item'\n"
+            "- Specify 'package_product_name' (e.g. 'drive', 'sheets', 'documents', 'gmail', 'calendar', 'forms', 'meet').\n"
+            "- Specify 'api_version' (e.g. 'v4' for sheets, 'v3' for drive/calendar, 'v1' for docs/forms/meet/gmail).\n"
+            "- Specify 'target_resource_path' (e.g. 'spreadsheets.values', 'files', 'events', 'users.messages').\n"
+            "- Specify 'method_name' (e.g. 'append', 'get', 'create', 'send'). Note: Gmail ONLY supports 'send' or 'create'. Read/modify is strictly forbidden.\n"
+            "- For Gmail ('gmail'):\n"
+            "  * Set 'target_resource_path': 'users.messages', 'method_name': 'send'.\n"
+            "  * In 'kwargs': provide human-readable 'to' (or 'to_email'), 'subject', and 'body' (text or HTML content). The engine automatically constructs the RFC 2822 MIME message and formats it into the required Google Discovery body={'raw': '<base64>'} structure.\n"
+            "  * NEVER invent dummy placeholder strings like 'BASE64_ENCODED_WELCOME_EMAIL'. Always supply realistic, readable text for 'to', 'subject', and 'body'.\n"
+            "- For other Google tools, pass action parameters under 'kwargs' according to the respective Google product API."
+        ),
+        "schema": {
+            "type": "object",
+            "properties": {
+                "tool": {"type": "string", "enum": ["google_action"]},
+                "execution_mode": {"type": "string", "enum": ["single", "per_item"]},
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "package_product_name": {"type": "string", "description": "Google package name: drive, sheets, documents, gmail, calendar, forms, meet."},
+                            "api_version": {"type": "string", "description": "API version e.g. v1, v3, v4."},
+                            "target_resource_path": {"type": "string", "description": "Resource node path e.g. spreadsheets.values, files, events."},
+                            "method_name": {"type": "string", "description": "Target method name e.g. append, get, insert, send."},
+                            "kwargs": {"type": "object", "description": "Payload parameters passed to method (**kwargs)."}
+                        },
+                        "required": ["package_product_name", "method_name"]
+                    }
+                }
+            },
+            "required": ["tool", "execution_mode", "items"]
+        }
     },
 }
 

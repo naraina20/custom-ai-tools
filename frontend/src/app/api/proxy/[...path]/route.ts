@@ -69,8 +69,19 @@ async function handleProxyRequest(req: NextRequest, pathSegments: string[]) {
     });
 
     const resContentType = backendRes.headers.get('content-type') || '';
-    let responseData: any;
 
+    // If backend returns HTML (e.g. OAuth callback page), stream it directly with proper Content-Type
+    if (resContentType.includes('text/html')) {
+      const htmlText = await backendRes.text();
+      return new NextResponse(htmlText, {
+        status: backendRes.status,
+        headers: {
+          'Content-Type': resContentType,
+        },
+      });
+    }
+
+    let responseData: any;
     if (resContentType.includes('application/json')) {
       responseData = await backendRes.json();
     } else {
@@ -93,7 +104,16 @@ async function handleProxyRequest(req: NextRequest, pathSegments: string[]) {
       );
     }
 
-    return NextResponse.json(responseData, { status: backendRes.status });
+    if (resContentType.includes('application/json')) {
+      return NextResponse.json(responseData, { status: backendRes.status });
+    }
+
+    return new NextResponse(responseData, {
+      status: backendRes.status,
+      headers: {
+        'Content-Type': resContentType || 'text/plain',
+      },
+    });
 
   } catch (error: any) {
     console.error(`[Proxy Network Failure] Req: ${requestId} to ${targetUrl}:`, error.message);

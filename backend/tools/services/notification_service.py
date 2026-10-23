@@ -6,6 +6,7 @@ from channels.layers import get_channel_layer
 from django.conf import settings
 from django.core.mail import send_mail
 from django.template.loader import render_to_string
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
@@ -275,4 +276,45 @@ class NotificationService:
                 logger.info("Webhook failure email alert sent to %s for tool '%s'", target_email, tool_title)
             except Exception as mail_err:
                 logger.warning("Failed to dispatch webhook failure email alert: %s", str(mail_err))
+
+    @classmethod
+    def broadcast_step_progress(
+        cls,
+        user_id: str,
+        tool_title: str,
+        step_name: str,
+        details: str,
+        status: str = "completed",
+        step_index: int = 1,
+        total_steps: int = 4,
+    ) -> None:
+        """
+        Broadcasts on-app WebSocket notification only (STRICTLY NO EMAIL) for execution step progression.
+        """
+        if not user_id:
+            return
+
+        try:
+            channel_layer = get_channel_layer()
+            if channel_layer:
+                payload = {
+                    "type": "STEP_PROGRESS",
+                    "tool_title": tool_title,
+                    "step_name": step_name,
+                    "details": details,
+                    "status": status,
+                    "step_index": step_index,
+                    "total_steps": total_steps,
+                    "timestamp": timezone.now().isoformat(),
+                }
+                async_to_sync(channel_layer.group_send)(
+                    f"user_{user_id}",
+                    {
+                        "type": "step.notification",
+                        "payload": payload,
+                    }
+                )
+                logger.info("Step progress WebSocket broadcast to user_%s: [%s] %s", user_id, step_name, details)
+        except Exception as ws_err:
+            logger.warning("Failed to dispatch step progress WebSocket: %s", str(ws_err))
 

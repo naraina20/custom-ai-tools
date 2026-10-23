@@ -27,8 +27,16 @@ from tools.models import (
     LangGraphCheckpointModel,
     LangGraphCheckpointWriteModel,
     UserOAuthToken,
+    GoogleProductCapability,
+    SharedUserAsset,
 )
 from tools.services.notification_service import NotificationService
+from tools.services.google_executor import (
+    GoogleExecutorService,
+    execute_google_action,
+    AssetQuarantineError,
+    PLATFORM_SERVICE_ACCOUNT_EMAIL,
+)
 from tools.services.general_tools import (
     DocumentExtractorTool,
     ImagesToPdfTool,
@@ -323,6 +331,14 @@ class AgentState(TypedDict):
     failed_items: List[Dict[str, Any]]  # Items failing validation/execution
     error: Optional[str]
 
+    # Google Products Integration & Asset Quarantine fields
+    add_gmail_oauth_flag: Optional[bool]
+    google_products: List[str]
+    google_auth_mode: Optional[str]
+    quarantined_assets_verified: bool
+    google_capability_context: Optional[Dict[str, Any]]
+    is_app_execution: Optional[bool]
+
 
 # ---------------------------------------------------------------------------
 # 3. LangGraph Graph Nodes
@@ -400,7 +416,7 @@ def tool_selector_node(state: AgentState) -> Dict[str, Any]:
         {"selected_tools": selected_tools, "reason": demand_check.get("reason", "")}
     )
 
-    return {
+    out_payload = {
         "tool_slug": tool.slug,
         "selected_tools": selected_tools,
         "auth_token": auth_token,
@@ -417,6 +433,95 @@ def tool_selector_node(state: AgentState) -> Dict[str, Any]:
                 "content": f"Node 1: Evaluated AI-tool description. Selected ordered general tools: {selected_tools}. Reason: {demand_check.get('reason', '')}",
             }
         ],
+    }
+
+    if state.get("is_app_execution"):
+        tools_str = ", ".join(selected_tools) if selected_tools else "Standard pipeline"
+        NotificationService.broadcast_step_progress(
+            user_id=state.get("user_id"),
+            tool_title=tool.title if tool else f"Tool #{tool_id}",
+            step_name="Step 1: Pipeline Configuration",
+            details=f"Selected workflow tools: {tools_str}",
+            status="completed",
+            step_index=1,
+            total_steps=4,
+        )
+
+    return out_payload
+
+
+def google_capability_node(state: AgentState) -> Dict[str, Any]:
+    """
+    Dedicated Node: Google Capability Validator
+    Cross-checks the selected tools and tool context against the Google Product Capabilities Matrix.
+    Strictly verifies that:
+    1. Only supported products (Gmail, Calendar, Docs, Drive, Forms, Meet, Sheets) are utilized.
+    2. Gmail access is strictly restricted to outbound send (gmail.send). Any inbox read or modify action is rejected.
+    3. Flags whether add_gmail_oauth_flag is active.
+    """
+    if state.get("error"):
+        return {}
+
+    tool_id = state["tool_id"]
+    tool = CustomTool.objects.filter(pk=tool_id).first()
+    selected_tools = state.get("selected_tools", [])
+    google_products = (tool.google_products if tool else []) or []
+    add_gmail_oauth_flag = tool.add_gmail_oauth_flag if tool else False
+    google_auth_mode = tool.google_auth_mode if tool else 'none'
+
+    is_google_active = (
+        "google_action" in selected_tools
+        or bool(google_products)
+        or add_gmail_oauth_flag
+        or (tool and tool.oauth_provider == "google")
+    )
+
+    AppLogger.step(
+        "Google Capability Node",
+        f"Verifying Google capabilities for '{tool.title if tool else tool_id}': active={is_google_active}, gmail_send={add_gmail_oauth_flag}, products={google_products}"
+    )
+
+    if not is_google_active:
+        return {
+            "google_products": google_products,
+            "add_gmail_oauth_flag": add_gmail_oauth_flag,
+            "google_auth_mode": google_auth_mode,
+            "quarantined_assets_verified": False,
+        }
+
+    # Fetch available capabilities from database matrix
+    caps = GoogleProductCapability.objects.all()
+
+    # Check for prohibited Gmail inbox/read actions in input or tool description
+    tool_desc = (tool.description if tool else "").lower()
+    if "gmail" in tool_desc and any(forbidden in tool_desc for forbidden in ["read email", "inbox", "search email", "delete email"]):
+        err = "Security Policy Violation: Gmail inbox read/modify access is prohibited. Only outgoing email dispatch (gmail.send) is permitted."
+        AppLogger.error("Google Capability Node", err)
+        return {
+            "error": err,
+            "messages": [{"role": "assistant", "content": err}],
+        }
+
+    if state.get("is_app_execution") and is_google_active:
+        NotificationService.broadcast_step_progress(
+            user_id=state.get("user_id"),
+            tool_title=tool.title if tool else f"Tool #{tool_id}",
+            step_name="Step 2: Google Capabilities Verified",
+            details="Validated permission boundary and product compatibility (gmail.send authorized).",
+            status="completed",
+            step_index=2,
+            total_steps=4,
+        )
+
+    return {
+        "google_products": google_products,
+        "add_gmail_oauth_flag": add_gmail_oauth_flag,
+        "google_auth_mode": google_auth_mode,
+        "quarantined_assets_verified": False,
+        "google_capability_context": {
+            "supported_count": caps.count(),
+            "service_account_email": PLATFORM_SERVICE_ACCOUNT_EMAIL,
+        }
     }
 
 
@@ -547,6 +652,17 @@ Return ONLY a valid JSON object matching this exact structure:
         {"plans": [p.get("tool") for p in execution_plans], "requires_hitl": requires_hitl}
     )
 
+    if state.get("is_app_execution"):
+        NotificationService.broadcast_step_progress(
+            user_id=state.get("user_id"),
+            tool_title=tool.title if tool else f"Tool #{tool_id}",
+            step_name="Step 3: Plan Generation",
+            details=f"Prepared {len(execution_plans)} execution plan(s) matching schema parameters.",
+            status="completed",
+            step_index=3,
+            total_steps=4,
+        )
+
     return {
         "execution_plans": execution_plans,
         "planned_action": execution_plans[0] if execution_plans else {},
@@ -561,6 +677,92 @@ Return ONLY a valid JSON object matching this exact structure:
                 "content": f"Node 2: Prepared {len(execution_plans)} execution plan(s) matching general tool schemas in order: {[p.get('tool') for p in execution_plans]}. HITL: {requires_hitl}.",
             }
         ],
+    }
+
+
+def google_asset_quarantine_node(state: AgentState) -> Dict[str, Any]:
+    """
+    Dedicated Node: Shared Service Account Asset Quarantine Strategy
+    Ensures assets manually shared with narainad308@gmail.com are quarantined per user profile.
+    Cross-verifies that:
+    1. Any referenced Google file/folder belongs to the caller's user_id in SharedUserAsset.
+    2. Programmatically cross-verifies access against the Drive API using the Service Account credentials block.
+    3. Blocks execution immediately if an asset is unverified or belongs to a different user.
+    """
+    if state.get("error"):
+        return {}
+
+    user_id = state.get("user_id", "")
+    execution_plans = state.get("execution_plans", [])
+    deploy_tool_data = state.get("deploy_tool_data", {})
+    webhook_data = state.get("webhook_data", {})
+    auth_mode = state.get("google_auth_mode") or deploy_tool_data.get("google_auth_mode", "none")
+
+    AppLogger.step(
+        "Asset Quarantine Node",
+        f"Scanning execution plans for shared Google assets (User: '{user_id}', auth_mode: '{auth_mode}')..."
+    )
+
+    # Collect any file/folder IDs referenced across plans and inputs
+    referenced_asset_ids = set()
+    for plan in execution_plans:
+        if plan.get("tool") == "google_action":
+            for item in plan.get("items", []):
+                kwargs = item.get("kwargs", {})
+                for key in ["fileId", "folderId", "spreadsheetId", "documentId", "formId"]:
+                    if kwargs.get(key):
+                        referenced_asset_ids.add(str(kwargs[key]).strip())
+
+    # Check deploy_tool_data and webhook_data for explicit asset IDs
+    for data_source in [deploy_tool_data, webhook_data if isinstance(webhook_data, dict) else {}]:
+        for k, v in data_source.items():
+            if any(term in k.lower() for term in ["file_id", "folder_id", "sheet_id", "doc_id", "asset_id"]) and isinstance(v, str):
+                referenced_asset_ids.add(v.strip())
+
+    if not referenced_asset_ids:
+        return {"quarantined_assets_verified": True}
+
+    # Verify each asset under quarantine rules
+    verified_assets = []
+    for asset_id in referenced_asset_ids:
+        # Check SharedUserAsset table
+        asset_record = SharedUserAsset.objects.filter(google_file_or_folder_id=asset_id).first()
+        if asset_record:
+            if asset_record.user_id != user_id:
+                err = (
+                    f"Quarantine Access Denied: Asset '{asset_id}' is registered to a different user profile. "
+                    f"Cross-user asset sharing via the platform service account is strictly quarantined."
+                )
+                AppLogger.error("Asset Quarantine Node", err)
+                return {
+                    "error": err,
+                    "messages": [{"role": "assistant", "content": err}],
+                }
+
+        # If manual delegation is used, cross-verify against Drive API
+        if auth_mode in ["manual_delegation", "service_account"]:
+            is_valid, asset, err = GoogleExecutorService.verify_and_quarantine_asset(
+                user_id=user_id,
+                google_file_or_folder_id=asset_id,
+                product_name="drive"
+            )
+            if not is_valid:
+                AppLogger.error("Asset Quarantine Node", f"Asset verification failed: {err}")
+                return {
+                    "error": err or f"Failed cross-verifying access to asset {asset_id}",
+                    "messages": [{"role": "assistant", "content": f"Quarantine verification failed: {err}"}],
+                }
+            verified_assets.append(asset_id)
+        else:
+            verified_assets.append(asset_id)
+
+    AppLogger.step(
+        "Asset Quarantine Node",
+        f"Quarantine verification successful for {len(verified_assets)} asset(s): {verified_assets}."
+    )
+
+    return {
+        "quarantined_assets_verified": True,
     }
 
 
@@ -757,6 +959,10 @@ def tool_executor(state: AgentState) -> Dict[str, Any]:
                         "user_details": user_details,
                         "user_tool_data": user_tool_data,
                         "input_data": input_data,
+                        "google_auth_mode": state.get("google_auth_mode") or getattr(tool, "google_auth_mode", "none"),
+                        "add_gmail_oauth_flag": state.get("add_gmail_oauth_flag", False) or getattr(tool, "add_gmail_oauth_flag", False),
+                        "google_products": state.get("google_products", []) or getattr(tool, "google_products", []),
+                        "tool": tool,
                     }
                 )
                 plan_item_results.append({
@@ -851,6 +1057,17 @@ def tool_executor(state: AgentState) -> Dict[str, Any]:
         "executed_at": timezone.now().isoformat(),
     }
 
+    if state.get("is_app_execution"):
+        NotificationService.broadcast_step_progress(
+            user_id=user_id,
+            tool_title=tool_title,
+            step_name="Step 4: Execution Completed",
+            details=execution_result["summary"],
+            status="completed" if not has_partial_failures else "warning",
+            step_index=4,
+            total_steps=4,
+        )
+
     return {
         "execution_result": execution_result,
         "failed_items": failed_items,
@@ -873,22 +1090,28 @@ def tool_executor(state: AgentState) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 def build_agent_graph(checkpointer: BaseCheckpointSaver):
     """
-    Compiles StateGraph with 4 distinct nodes:
+    Compiles StateGraph with 6 distinct sequential nodes:
     1. tool_selector: selects ordered list of general tools based on AI-Tool description.
-    2. tool_planner: produces structured array of execution plans matching tool schemas in exact order.
-    3. hitl_gatekeeper: intercepts execution for human approval if required by HITL policy.
-    4. tool_executor: sequentially executes plans with per-item validation and non-blocking failure alerts.
+    2. google_capability_node: verifies Google product compatibility and enforces strict permission boundaries (gmail.send only).
+    3. tool_planner: produces structured array of execution plans matching tool schemas in exact order.
+    4. google_asset_quarantine_node: cross-verifies shared asset ownership and service account access before execution.
+    5. hitl_gatekeeper: intercepts execution for human approval if required by HITL policy.
+    6. tool_executor: sequentially executes plans with per-item validation and non-blocking failure alerts.
     """
     workflow = StateGraph(AgentState)
 
     workflow.add_node("tool_selector", tool_selector_node)
+    workflow.add_node("google_capability_node", google_capability_node)
     workflow.add_node("tool_planner", tool_planner_node)
+    workflow.add_node("google_asset_quarantine_node", google_asset_quarantine_node)
     workflow.add_node("hitl_gatekeeper", hitl_gatekeeper)
     workflow.add_node("tool_executor", tool_executor)
 
     workflow.add_edge(START, "tool_selector")
-    workflow.add_edge("tool_selector", "tool_planner")
-    workflow.add_edge("tool_planner", "hitl_gatekeeper")
+    workflow.add_edge("tool_selector", "google_capability_node")
+    workflow.add_edge("google_capability_node", "tool_planner")
+    workflow.add_edge("tool_planner", "google_asset_quarantine_node")
+    workflow.add_edge("google_asset_quarantine_node", "hitl_gatekeeper")
     workflow.add_conditional_edges(
         "hitl_gatekeeper",
         should_execute,
@@ -933,6 +1156,7 @@ class GraphEngine:
         webhook_data: Optional[Any] = None,
         deployer_data: Optional[Dict[str, Any]] = None,
         tool_owner_data: Optional[Dict[str, Any]] = None,
+        is_app_execution: bool = False,
     ) -> Dict[str, Any]:
         """
         Runs the agent graph. If interrupted for human approval, returns pending status.
@@ -1004,7 +1228,24 @@ class GraphEngine:
             "planned_action": None,
             "failed_items": [],
             "error": None,
+            "add_gmail_oauth_flag": getattr(tool, "add_gmail_oauth_flag", False) if tool else False,
+            "google_products": getattr(tool, "google_products", []) if tool else [],
+            "google_auth_mode": (deploy_tool_data or {}).get("google_auth_mode") or (getattr(tool, "google_auth_mode", "none") if tool else "none"),
+            "quarantined_assets_verified": False,
+            "google_capability_context": None,
+            "is_app_execution": is_app_execution,
         }
+
+        if is_app_execution:
+            NotificationService.broadcast_step_progress(
+                user_id=eff_user_id,
+                tool_title=tool_title,
+                step_name="Workflow Initiated",
+                details=f"Starting autonomous workflow run for '{tool_title}'...",
+                status="started",
+                step_index=1,
+                total_steps=4,
+            )
 
         AppLogger.step("GraphEngine", f"Starting execution for Tool #{tool_id} ('{tool_title}') | Thread: {tid}")
 

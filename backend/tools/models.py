@@ -15,7 +15,7 @@ class CustomTool(models.Model):
     description = models.TextField(help_text="Detailed description of tool functionality")
     slug = models.SlugField(max_length=255, unique=True, blank=True, help_text="Unique slug identifier")
     author_id = models.CharField(max_length=255, db_index=True, help_text="Clerk User ID of creator")
-    is_public = models.BooleanField(default=False, db_index=True, help_text="Whether tool appears on marketplace")
+    is_public = models.BooleanField(default=True, db_index=True, help_text="Whether tool appears on marketplace")
     requires_oauth = models.BooleanField(default=False, help_text="Whether tool requires OAuth access")
     oauth_provider = models.CharField(
         max_length=50,
@@ -24,6 +24,14 @@ class CustomTool(models.Model):
         help_text="Target OAuth provider if authentication is required"
     )
     requires_hitl = models.BooleanField(default=False, help_text="Human-in-the-loop approval requirement")
+    add_gmail_oauth_flag = models.BooleanField(default=False, help_text="Whether tool requires Gmail send authorization")
+    google_products = models.JSONField(default=list, blank=True, help_text="Detected Google products involved in tool execution")
+    google_auth_mode = models.CharField(
+        max_length=50,
+        default='none',
+        blank=True,
+        help_text="Active Google auth mode: oauth_full, granular_picker, manual_delegation, gmail_app_password, gmail_platform, none"
+    )
     form_schema = models.JSONField(
         default=dict,
         blank=True,
@@ -74,6 +82,7 @@ class UserOAuthToken(models.Model):
 
     user_id = models.CharField(max_length=255, db_index=True, help_text="Clerk User ID")
     provider = models.CharField(max_length=50, choices=PROVIDER_CHOICES)
+    account_email = models.CharField(max_length=255, blank=True, null=True, help_text="Email of the authenticated OAuth account")
     access_token = models.TextField(help_text="Encrypted or raw access token")
     refresh_token = models.TextField(blank=True, null=True, help_text="OAuth refresh token")
     token_expiry = models.DateTimeField(blank=True, null=True, help_text="Token expiration timestamp")
@@ -314,4 +323,67 @@ class WebhookEventJob(models.Model):
 
     def __str__(self):
         return f"WebhookEventJob({self.idempotency_key[:16]}... - {self.tool.title} [{self.status}])"
+
+
+class GoogleProductCapability(models.Model):
+    """
+    Capability Matrix defining supported Google products, APIs, and explicit permission scopes.
+    Matches exact SQL specification: table name google_product_capabilities.
+    Gmail access is strictly limited to 'gmail.send'; read/modify is omitted.
+    """
+    product_display_name = models.CharField(max_length=50)
+    package_product_name = models.CharField(max_length=50)
+    api_version = models.CharField(max_length=10)
+    permission_scope_text = models.CharField(max_length=100)
+    target_resource_path = models.CharField(max_length=100)
+    description = models.CharField(max_length=255)
+
+    class Meta:
+        db_table = 'google_product_capabilities'
+        verbose_name = 'Google Product Capability'
+        verbose_name_plural = 'Google Product Capabilities'
+        ordering = ['product_display_name', 'package_product_name']
+
+    def __str__(self):
+        return f"{self.product_display_name} ({self.package_product_name} {self.api_version}) - {self.permission_scope_text}"
+
+
+class SharedUserAsset(models.Model):
+    """
+    Dedicated database model for the Shared Service Account Asset Quarantine Strategy.
+    Tracks user_id mapped against specific google_file_or_folder_id to prevent cross-profile leakage.
+    Access must be programmatically cross-verified against the Drive API before execution.
+    """
+    DELEGATION_TYPE_CHOICES = [
+        ('manual_service_account', 'Manual Service Account Delegation (narainad308@gmail.com)'),
+        ('granular_picker', 'Granular Google Picker Selection'),
+        ('oauth_full', 'Direct OAuth Consent'),
+    ]
+
+    user_id = models.CharField(max_length=255, db_index=True, help_text="Clerk User ID of the asset owner/delegator")
+    google_file_or_folder_id = models.CharField(max_length=255, db_index=True, help_text="Google Drive File or Folder ID")
+    asset_name = models.CharField(max_length=255, blank=True, default="", help_text="Display title or name of the asset")
+    mime_type = models.CharField(max_length=100, blank=True, default="", help_text="MIME type of the asset")
+    product_name = models.CharField(max_length=50, default='drive', help_text="Target Google product (drive, sheets, docs, forms)")
+    delegation_type = models.CharField(max_length=50, choices=DELEGATION_TYPE_CHOICES, default='manual_service_account')
+    service_account_email = models.CharField(max_length=255, default='narainad308@gmail.com')
+    is_verified = models.BooleanField(default=False, db_index=True, help_text="Whether access has been cross-verified against Drive API")
+    verified_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.TextField(blank=True, null=True, help_text="Last verification error if any")
+    metadata = models.JSONField(default=dict, blank=True, help_text="Extra asset metadata (size, parents, permissions)")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'shared_user_assets'
+        unique_together = ('user_id', 'google_file_or_folder_id')
+        indexes = [
+            models.Index(fields=['user_id', 'is_verified']),
+            models.Index(fields=['google_file_or_folder_id']),
+        ]
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"SharedAsset({self.user_id} -> {self.google_file_or_folder_id} [{self.asset_name or 'unnamed'}])"
+
 

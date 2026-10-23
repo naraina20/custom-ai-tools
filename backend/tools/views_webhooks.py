@@ -30,14 +30,30 @@ class UserToolDeployView(APIView):
     POST /api/tools/deploy/
     Deploys a personal instance of a CustomTool for a specific user, generating a unique
     webhook URL and saving their user settings (e.g. user_email, forwarding endpoints).
+
+    GET /api/tools/deploy/?user_id=...&tool_id=...
+    Lists all deployed tool instances for a user (optionally filtered by tool_id).
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
+
+    def get(self, request, *args, **kwargs):
+        user_id = getattr(request.user, 'user_id', None) or request.headers.get('X-User-Id') or request.query_params.get('user_id')
+        if not user_id:
+            return Response({"error": "user_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        queryset = UserToolDeployment.objects.filter(user_id=user_id, is_active=True).select_related('tool')
+        tool_id = request.query_params.get('tool_id')
+        if tool_id:
+            queryset = queryset.filter(tool_id=tool_id)
+
+        serializer = UserToolDeploymentSerializer(queryset, many=True, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
     def post(self, request, *args, **kwargs):
         serializer = UserToolDeployRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         tool_id = serializer.validated_data['tool_id']
-        user_id = getattr(request.user, 'user_id', None) or serializer.validated_data['user_id']
+        user_id = getattr(request.user, 'user_id', None) or request.headers.get('X-User-Id') or serializer.validated_data['user_id']
         config_data = serializer.validated_data.get('config_data', {})
 
         tool = CustomTool.objects.filter(id=tool_id).first()

@@ -5,6 +5,9 @@ import {
   AgentRunResponse,
   TaxChatMessage,
   TaxChatSession,
+  GeneratedSchemaResponse,
+  GoogleCapability,
+  SharedUserAsset,
 } from './types';
 
 export class ApiError extends Error {
@@ -73,17 +76,46 @@ export const apiClient = {
     });
   },
 
-  async generateSchema(description: string): Promise<{
-    title: string;
-    description: string;
-    requires_oauth: boolean;
-    oauth_provider: 'none' | 'google' | 'github';
-    requires_hitl: boolean;
-    form_schema: FormSchema;
-  }> {
-    return fetchFromProxy('tools/generate-schema/', {
+  async generateSchema(description: string): Promise<GeneratedSchemaResponse> {
+    return fetchFromProxy<GeneratedSchemaResponse>('tools/generate-schema/', {
       method: 'POST',
       body: JSON.stringify({ description }),
+    });
+  },
+
+  async getGoogleCapabilities(): Promise<{
+    service_account_email: string;
+    capabilities: GoogleCapability[];
+    supported_products: string[];
+    gmail_permission_limit: string;
+  }> {
+    return fetchFromProxy('tools/google-capabilities/', {
+      method: 'GET',
+    });
+  },
+
+  async getGoogleAssets(userId: string): Promise<SharedUserAsset[]> {
+    return fetchFromProxy<SharedUserAsset[]>(`tools/google-assets/?user_id=${encodeURIComponent(userId)}`, {
+      method: 'GET',
+    });
+  },
+
+  async registerGoogleAsset(payload: {
+    user_id: string;
+    google_file_or_folder_id: string;
+    asset_name?: string;
+    product_name?: string;
+    delegation_type?: string;
+  }): Promise<{
+    asset: SharedUserAsset;
+    is_verified: boolean;
+    verification_error?: string | null;
+    service_account_email: string;
+    message: string;
+  }> {
+    return fetchFromProxy('tools/google-assets/', {
+      method: 'POST',
+      body: JSON.stringify(payload),
     });
   },
 
@@ -96,6 +128,9 @@ export const apiClient = {
     requires_hitl?: boolean;
     is_public?: boolean;
     author_id?: string;
+    add_gmail_oauth_flag?: boolean;
+    google_products?: string[];
+    google_auth_mode?: string;
   }): Promise<CustomTool> {
     return fetchFromProxy<CustomTool>('tools/create/', {
       method: 'POST',
@@ -114,12 +149,22 @@ export const apiClient = {
     });
   },
 
+  async getUserDeployments(userId: string, toolId?: number): Promise<UserToolDeployment[]> {
+    const params = new URLSearchParams();
+    if (userId) params.append('user_id', userId);
+    if (toolId) params.append('tool_id', toolId.toString());
+    const qs = params.toString() ? `?${params.toString()}` : '';
+    return fetchFromProxy<UserToolDeployment[]>(`tools/deploy/${qs}`);
+  },
+
   // --- Agent & Execution API ---
   async runAgent(payload: {
     tool_id: number;
     input_data: Record<string, any>;
     user_id?: string;
     thread_id?: string;
+    deploy_tool_data?: Record<string, any>;
+    webhook_data?: Record<string, any>;
   }): Promise<AgentRunResponse> {
     return fetchFromProxy<AgentRunResponse>('agent/run/', {
       method: 'POST',
@@ -170,4 +215,42 @@ export const apiClient = {
     const qs = userId ? `?user_id=${encodeURIComponent(userId)}` : '';
     return fetchFromProxy<TaxChatSession[]>(`tax/sessions/${qs}`);
   },
+
+  // --- Google OAuth Consent & Token API ---
+  async initGoogleOAuth(userId: string, scope?: string): Promise<{
+    auth_url: string;
+    client_id_configured: boolean;
+    redirect_uri: string;
+    error?: string;
+    details?: string;
+  }> {
+    const params = new URLSearchParams({ user_id: userId });
+    if (scope) params.append('scope', scope);
+    return fetchFromProxy(`oauth/google/init/?${params.toString()}`);
+  },
+
+  async getGoogleOAuthStatus(userId: string): Promise<{
+    connected: boolean;
+    provider: string;
+    client_id_configured: boolean;
+    email?: string;
+    is_expired?: boolean;
+    has_refresh_token?: boolean;
+    revoked?: boolean;
+    message?: string;
+  }> {
+    return fetchFromProxy(`oauth/google/status/?user_id=${encodeURIComponent(userId)}`);
+  },
+
+  async revokeGoogleOAuth(userId: string): Promise<{
+    connected: boolean;
+    success: boolean;
+    message: string;
+  }> {
+    return fetchFromProxy('oauth/google/revoke/', {
+      method: 'POST',
+      body: JSON.stringify({ user_id: userId }),
+    });
+  },
 };
+

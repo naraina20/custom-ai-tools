@@ -186,6 +186,14 @@ REST_FRAMEWORK = {
 
 CLERK_SECRET_KEY = config('CLERK_SECRET_KEY', default='')
 
+# Google OAuth 2.0 Credentials (from Google Cloud Console -> APIs & Services -> Credentials)
+GOOGLE_OAUTH_CLIENT_ID = config('GOOGLE_OAUTH_CLIENT_ID', default=config('GOOGLE_CLIENT_ID', default=''))
+GOOGLE_OAUTH_CLIENT_SECRET = config('GOOGLE_OAUTH_CLIENT_SECRET', default=config('GOOGLE_CLIENT_SECRET', default=''))
+GOOGLE_OAUTH_REDIRECT_URI = config(
+    'GOOGLE_OAUTH_REDIRECT_URI',
+    default='http://localhost:3000/api/proxy/oauth/google/callback/'
+)
+
 
 # Brand & Email Configuration
 COMPANY_NAME = config('COMPANY_NAME', default="NexusAI Agent Systems")

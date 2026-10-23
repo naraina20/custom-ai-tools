@@ -21,21 +21,81 @@ export interface CustomTool {
   requires_oauth: boolean;
   oauth_provider: 'none' | 'google' | 'github';
   requires_hitl: boolean;
+  add_gmail_oauth_flag?: boolean;
+  google_products?: string[];
+  google_auth_mode?: string;
   form_schema: FormSchema;
   webhook_secret?: string;
   created_at: string;
   updated_at?: string;
 }
 
+export interface GeneratedSchemaResponse {
+  fallback_triggered: boolean;
+  fallback_reason?: string | null;
+  fallback_alternatives?: string[];
+  add_gmail_oauth_flag: boolean;
+  google_products_detected?: string[];
+  google_auth_flow_required?: 'both' | 'gmail' | 'drive_workspace' | 'none';
+  title?: string;
+  description?: string;
+  requires_oauth: boolean;
+  oauth_provider: 'none' | 'google' | 'github';
+  requires_hitl: boolean;
+  form_schema?: FormSchema;
+  api_config?: Record<string, any>;
+}
+
+export interface GoogleCapability {
+  id: number;
+  product_display_name: string;
+  package_product_name: string;
+  api_version: string;
+  permission_scope_text: string;
+  target_resource_path: string;
+  description: string;
+}
+
+export interface SharedUserAsset {
+  id?: number;
+  user_id: string;
+  google_file_or_folder_id: string;
+  asset_name: string;
+  mime_type?: string;
+  product_name: string;
+  delegation_type: 'manual_service_account' | 'granular_picker' | 'oauth_full';
+  service_account_email: string;
+  is_verified: boolean;
+  verified_at?: string;
+  last_error?: string;
+}
+
 export interface UserToolDeployment {
   id: number;
   tool: number | CustomTool;
+  tool_title?: string;
+  tool_slug?: string;
   user_id: string;
   user_webhook_secret: string;
   config_data: Record<string, any>;
   is_active: boolean;
   created_at: string;
   webhook_url?: string;
+}
+
+export interface AppNotification {
+  id: string;
+  type: 'STEP_PROGRESS' | 'HITL_REQUEST' | 'WEBHOOK_EXECUTION_COMPLETED' | 'TOOL_EXECUTION_PARTIAL_FAILURE' | 'INFO';
+  tool_title?: string;
+  step_name?: string;
+  details?: string;
+  status?: string;
+  timestamp: string;
+  read: boolean;
+  step_index?: number;
+  total_steps?: number;
+  thread_id?: string;
+  data?: any;
 }
 
 export interface AgentRunResponse {

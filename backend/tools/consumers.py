@@ -52,9 +52,23 @@ class NotificationConsumer(AsyncWebsocketConsumer):
         payload = event.get('payload', {})
         await self.send(text_data=json.dumps(payload))
 
-    async def webhook_notification(self, event):
+    async def step_notification(self, event):
         """
-        Handler for webhook status updates.
+        Handler for real-time STEP_PROGRESS broadcasts.
+        """
+        payload = event.get('payload', {})
+        await self.send(text_data=json.dumps(payload))
+
+    async def tool_failure_notification(self, event):
+        """
+        Handler for partial tool failure alerts.
+        """
+        payload = event.get('payload', {})
+        await self.send(text_data=json.dumps(payload))
+
+    async def generic_notification(self, event):
+        """
+        Handler for generic user notifications.
         """
         payload = event.get('payload', {})
         await self.send(text_data=json.dumps(payload))

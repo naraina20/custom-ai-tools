@@ -16,6 +16,8 @@ export const metadata: Metadata = {
     'Enterprise AI Tool Creation, LangGraph Human-in-the-Loop Orchestration, and Indian GST/Tax Intelligence Assistant.',
 };
 
+import { NotificationProvider } from '@/lib/NotificationContext';
+
 export default function RootLayout({
   children,
 }: {
@@ -33,9 +35,11 @@ export default function RootLayout({
       <html lang="en" className={`dark ${inter.variable}`}>
         <body className="min-h-screen bg-[var(--background)] text-[var(--foreground)] antialiased font-sans selection:bg-indigo-500/30 selection:text-indigo-200">
           <ParticlesBackground />
-          <div className="relative z-10 min-h-screen flex flex-col">
-            {children}
-          </div>
+          <NotificationProvider>
+            <div className="relative z-10 min-h-screen flex flex-col">
+              {children}
+            </div>
+          </NotificationProvider>
         </body>
       </html>
     </ClerkProvider>

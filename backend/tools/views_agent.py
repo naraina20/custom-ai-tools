@@ -109,6 +109,7 @@ class AgentRunView(APIView):
                 webhook_data=webhook_data,
                 deployer_data=deployer_data,
                 tool_owner_data=tool_owner_data,
+                is_app_execution=True,
             )
             return Response(result, status=status.HTTP_200_OK)
         except Exception as exc:
