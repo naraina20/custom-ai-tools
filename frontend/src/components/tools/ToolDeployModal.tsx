@@ -6,6 +6,7 @@ import { useUser } from '@clerk/nextjs';
 import { apiClient } from '@/lib/api-client';
 import { CustomTool, UserToolDeployment } from '@/lib/types';
 import { GoogleOAuthConsentButton } from './GoogleOAuthConsentButton';
+import { COMPANY_NAME } from '@/config/site';
 import {
   X,
   Share2,
@@ -362,7 +363,7 @@ export function ToolDeployModal({ tool, isOpen, onClose, onDeploySuccess }: Tool
                         Platform Default Outbound Email (narainad308@gmail.com)
                       </span>
                       <span className="text-[11px] text-slate-400">
-                        Uses Gravita AI managed infrastructure. No OAuth or credentials configuration needed.
+                        Uses {COMPANY_NAME} managed infrastructure. No OAuth or credentials configuration needed.
                       </span>
                     </div>
                   </label>

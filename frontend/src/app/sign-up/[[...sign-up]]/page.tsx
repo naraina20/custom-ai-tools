@@ -1,4 +1,11 @@
+import type { Metadata } from 'next';
 import { SignUp } from '@clerk/nextjs';
+import { COMPANY_NAME } from '@/config/site';
+
+export const metadata: Metadata = {
+  title: `Get Started | ${COMPANY_NAME}`,
+  description: `Create an account on ${COMPANY_NAME} to engineer AI tools, deploy autonomous webhook pipelines, and access Indian GST tax intelligence.`,
+};
 
 export default function SignUpPage() {
   return (
@@ -21,7 +28,7 @@ export default function SignUpPage() {
             </svg>
           </div>
           <h1 className="text-2xl font-bold tracking-tight text-white">
-            Get Started with Gravita AI
+            Get Started with {COMPANY_NAME}
           </h1>
           <p className="text-sm text-slate-400 mt-1">
             Build tools, run autonomous workflows, and access tax intelligence

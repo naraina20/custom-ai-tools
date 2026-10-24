@@ -6,6 +6,20 @@ from django.conf import settings
 from django.utils import timezone
 
 from tools.models import UserOAuthToken
+from tools.oauth_constants import (
+    PROVIDER_GOOGLE,
+    PROVIDER_GITHUB,
+    GOOGLE_TOKEN_URL,
+    GITHUB_TOKEN_URL,
+    GOOGLE_TOKENINFO_URL,
+    GOOGLE_REVOKE_URL,
+    OAUTH_GRANT_TYPE_REFRESH_TOKEN,
+    DEFAULT_TOKEN_EXPIRY_SECONDS,
+    DEFAULT_GITHUB_TOKEN_EXPIRY_SECONDS,
+    DEFAULT_TOKEN_REQUEST_TIMEOUT,
+    DEFAULT_TOKENINFO_REQUEST_TIMEOUT,
+    DEFAULT_REVOKE_REQUEST_TIMEOUT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -15,8 +29,8 @@ class OAuthService:
     Manages OAuth token lifecycle, validation, and auto-refresh for Google and GitHub.
     """
 
-    GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
-    GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
+    GOOGLE_TOKEN_URL = GOOGLE_TOKEN_URL
+    GITHUB_TOKEN_URL = GITHUB_TOKEN_URL
 
     @classmethod
     def get_or_refresh_token(cls, user_id: str, provider: str) -> Tuple[bool, Optional[str], Optional[str]]:
@@ -42,15 +56,15 @@ class OAuthService:
         logger.info("Attempting auto-refresh for expired %s token (User: %s)", provider, user_id)
 
         try:
-            if provider == 'google':
+            if provider == PROVIDER_GOOGLE:
                 success, new_access_token, expires_in, err = cls._refresh_google_token(token_record.refresh_token)
-            elif provider == 'github':
+            elif provider == PROVIDER_GITHUB:
                 success, new_access_token, expires_in, err = cls._refresh_github_token(token_record.refresh_token)
             else:
                 return False, None, f"Unsupported OAuth provider: {provider}"
 
             if not success or not new_access_token:
-                if provider == 'google' and ('invalid_grant' in str(err).lower() or 'revoked' in str(err).lower()):
+                if provider == PROVIDER_GOOGLE and ('invalid_grant' in str(err).lower() or 'revoked' in str(err).lower()):
                     logger.warning("Google refresh token revoked for user %s. Purging token record from DB.", user_id)
                     token_record.delete()
                 return False, None, err or "Token refresh failed."
@@ -84,9 +98,9 @@ class OAuthService:
             return False, None, "No token found."
 
         # Step 1: Verify live access token with Google's tokeninfo endpoint
-        tokeninfo_url = "https://oauth2.googleapis.com/tokeninfo"
+        tokeninfo_url = GOOGLE_TOKENINFO_URL
         try:
-            resp = requests.get(tokeninfo_url, params={"access_token": token_record.access_token}, timeout=8)
+            resp = requests.get(tokeninfo_url, params={"access_token": token_record.access_token}, timeout=DEFAULT_TOKENINFO_REQUEST_TIMEOUT)
             if resp.status_code == 200:
                 data = resp.json()
                 email = data.get("email") or token_record.account_email
@@ -107,7 +121,7 @@ class OAuthService:
             success, new_access_token, expires_in, refresh_err = cls._refresh_google_token(token_record.refresh_token)
             if success and new_access_token:
                 token_record.access_token = new_access_token
-                token_record.token_expiry = timezone.now() + timedelta(seconds=expires_in or 3600)
+                token_record.token_expiry = timezone.now() + timedelta(seconds=expires_in or DEFAULT_TOKEN_EXPIRY_SECONDS)
                 token_record.save(update_fields=['access_token', 'token_expiry', 'updated_at'])
                 logger.info("Successfully refreshed Google OAuth token during live verification (User: %s)", token_record.user_id)
                 return True, token_record.account_email, None
@@ -132,9 +146,9 @@ class OAuthService:
         """
         Explicitly revokes the token with Google API and purges the record from the database.
         """
-        token_record = UserOAuthToken.objects.filter(user_id=user_id, provider='google').first()
+        token_record = UserOAuthToken.objects.filter(user_id=user_id, provider=PROVIDER_GOOGLE).first()
         if not token_record and '@' in user_id:
-            token_record = UserOAuthToken.objects.filter(account_email=user_id, provider='google').first()
+            token_record = UserOAuthToken.objects.filter(account_email=user_id, provider=PROVIDER_GOOGLE).first()
 
         if not token_record:
             return True, "No active token found in database."
@@ -143,10 +157,10 @@ class OAuthService:
         if token_to_revoke:
             try:
                 requests.post(
-                    "https://oauth2.googleapis.com/revoke",
+                    GOOGLE_REVOKE_URL,
                     params={"token": token_to_revoke},
                     headers={"Content-Type": "application/x-www-form-urlencoded"},
-                    timeout=8
+                    timeout=DEFAULT_REVOKE_REQUEST_TIMEOUT
                 )
             except Exception as exc:
                 logger.warning("Error notifying Google API during token revocation: %s", str(exc))
@@ -164,12 +178,12 @@ class OAuthService:
             "client_id": client_id,
             "client_secret": client_secret,
             "refresh_token": refresh_token,
-            "grant_type": "refresh_token",
+            "grant_type": OAUTH_GRANT_TYPE_REFRESH_TOKEN,
         }
-        resp = requests.post(cls.GOOGLE_TOKEN_URL, data=payload, timeout=20)
+        resp = requests.post(cls.GOOGLE_TOKEN_URL, data=payload, timeout=DEFAULT_TOKEN_REQUEST_TIMEOUT)
         if resp.status_code == 200:
             data = resp.json()
-            return True, data.get("access_token"), data.get("expires_in", 3600), None
+            return True, data.get("access_token"), data.get("expires_in", DEFAULT_TOKEN_EXPIRY_SECONDS), None
         return False, None, None, f"Google refresh endpoint returned {resp.status_code}: {resp.text}"
 
     @classmethod
@@ -181,13 +195,13 @@ class OAuthService:
             "client_id": client_id,
             "client_secret": client_secret,
             "refresh_token": refresh_token,
-            "grant_type": "refresh_token",
+            "grant_type": OAUTH_GRANT_TYPE_REFRESH_TOKEN,
         }
         headers = {"Accept": "application/json"}
-        resp = requests.post(cls.GITHUB_TOKEN_URL, data=payload, headers=headers, timeout=20)
+        resp = requests.post(cls.GITHUB_TOKEN_URL, data=payload, headers=headers, timeout=DEFAULT_TOKEN_REQUEST_TIMEOUT)
         if resp.status_code == 200:
             data = resp.json()
             if "access_token" in data:
-                return True, data.get("access_token"), data.get("expires_in", 28800), None
+                return True, data.get("access_token"), data.get("expires_in", DEFAULT_GITHUB_TOKEN_EXPIRY_SECONDS), None
             return False, None, None, data.get("error_description", "Unknown error refreshing GitHub token")
         return False, None, None, f"GitHub refresh endpoint returned {resp.status_code}: {resp.text}"

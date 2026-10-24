@@ -1,4 +1,11 @@
+import type { Metadata } from 'next';
 import { SignIn } from '@clerk/nextjs';
+import { COMPANY_NAME } from '@/config/site';
+
+export const metadata: Metadata = {
+  title: `Sign In | ${COMPANY_NAME}`,
+  description: `Sign in to access your ${COMPANY_NAME} autonomous AI tools platform and statutory tax intelligence assistant.`,
+};
 
 export default function SignInPage() {
   return (
@@ -21,7 +28,7 @@ export default function SignInPage() {
             </svg>
           </div>
           <h1 className="text-2xl font-bold tracking-tight text-white">
-            Welcome to Gravita AI
+            Welcome to {COMPANY_NAME}
           </h1>
           <p className="text-sm text-slate-400 mt-1">
             Sign in to access your tools and AI assistant

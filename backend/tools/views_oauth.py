@@ -13,6 +13,28 @@ from rest_framework.views import APIView
 
 from .models import UserOAuthToken
 from .services.oauth_service import OAuthService
+from .oauth_constants import (
+    PROVIDER_GOOGLE,
+    GOOGLE_AUTH_URL,
+    GOOGLE_TOKEN_URL,
+    GOOGLE_USERINFO_URL,
+    DEFAULT_GOOGLE_SCOPES,
+    DEFAULT_GOOGLE_OAUTH_REDIRECT_URI,
+    DEFAULT_USER_ID,
+    DEFAULT_TOKEN_EXPIRY_SECONDS,
+    DEFAULT_TOKEN_REQUEST_TIMEOUT,
+    DEFAULT_USERINFO_REQUEST_TIMEOUT,
+    OAUTH_RESPONSE_TYPE_CODE,
+    OAUTH_ACCESS_TYPE_OFFLINE,
+    OAUTH_PROMPT_CONSENT,
+    OAUTH_INCLUDE_GRANTED_SCOPES,
+    OAUTH_GRANT_TYPE_AUTHORIZATION_CODE,
+    GOOGLE_OAUTH_SUCCESS_EVENT,
+    GOOGLE_OAUTH_ERROR_EVENT,
+    GOOGLE_OAUTH_BROADCAST_CHANNEL,
+    GOOGLE_OAUTH_LOCAL_STORAGE_KEY,
+    DEFAULT_FRONTEND_ORIGIN,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +57,7 @@ class GoogleOAuthInitView(APIView):
 
         client_id = getattr(settings, 'GOOGLE_OAUTH_CLIENT_ID', '').strip()
         client_secret = getattr(settings, 'GOOGLE_OAUTH_CLIENT_SECRET', '').strip()
-        redirect_uri = getattr(settings, 'GOOGLE_OAUTH_REDIRECT_URI', 'http://localhost:3000/api/proxy/oauth/google/callback/').strip()
+        redirect_uri = getattr(settings, 'GOOGLE_OAUTH_REDIRECT_URI', DEFAULT_GOOGLE_OAUTH_REDIRECT_URI).strip()
 
         if not client_id or not client_secret:
             return Response(
@@ -49,27 +71,22 @@ class GoogleOAuthInitView(APIView):
             )
 
         requested_scope = request.query_params.get('scope')
-        default_scope = (
-            "https://www.googleapis.com/auth/gmail.send "
-            "https://www.googleapis.com/auth/userinfo.email "
-            "openid"
-        )
-        scope = requested_scope or default_scope
+        scope = requested_scope or DEFAULT_GOOGLE_SCOPES
 
         state_payload = json.dumps({"user_id": str(user_id)})
 
         params = {
             "client_id": client_id,
             "redirect_uri": redirect_uri,
-            "response_type": "code",
+            "response_type": OAUTH_RESPONSE_TYPE_CODE,
             "scope": scope,
-            "access_type": "offline",
-            "prompt": "consent",
-            "include_granted_scopes": "true",
+            "access_type": OAUTH_ACCESS_TYPE_OFFLINE,
+            "prompt": OAUTH_PROMPT_CONSENT,
+            "include_granted_scopes": OAUTH_INCLUDE_GRANTED_SCOPES,
             "state": state_payload,
         }
 
-        auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"
+        auth_url = f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
 
         return Response({
             "auth_url": auth_url,
@@ -121,19 +138,19 @@ class GoogleOAuthCallbackView(APIView):
 
         client_id = getattr(settings, 'GOOGLE_OAUTH_CLIENT_ID', '').strip()
         client_secret = getattr(settings, 'GOOGLE_OAUTH_CLIENT_SECRET', '').strip()
-        redirect_uri = getattr(settings, 'GOOGLE_OAUTH_REDIRECT_URI', 'http://localhost:3000/api/proxy/oauth/google/callback/').strip()
+        redirect_uri = getattr(settings, 'GOOGLE_OAUTH_REDIRECT_URI', DEFAULT_GOOGLE_OAUTH_REDIRECT_URI).strip()
 
         # Exchange code with Google token endpoint
         token_payload = {
             "client_id": client_id,
             "client_secret": client_secret,
             "code": code,
-            "grant_type": "authorization_code",
+            "grant_type": OAUTH_GRANT_TYPE_AUTHORIZATION_CODE,
             "redirect_uri": redirect_uri,
         }
 
         try:
-            resp = requests.post(OAuthService.GOOGLE_TOKEN_URL, data=token_payload, timeout=20)
+            resp = requests.post(GOOGLE_TOKEN_URL, data=token_payload, timeout=DEFAULT_TOKEN_REQUEST_TIMEOUT)
             if resp.status_code != 200:
                 logger.error("Failed to exchange Google OAuth code: %s", resp.text)
                 return self._render_html_response(
@@ -147,15 +164,15 @@ class GoogleOAuthCallbackView(APIView):
             token_data = resp.json()
             access_token = token_data.get("access_token")
             refresh_token = token_data.get("refresh_token")
-            expires_in = token_data.get("expires_in", 3600)
+            expires_in = token_data.get("expires_in", DEFAULT_TOKEN_EXPIRY_SECONDS)
 
             # Retrieve authenticated user's email via Google userinfo
             account_email = ""
             try:
                 userinfo_resp = requests.get(
-                    "https://www.googleapis.com/oauth2/v2/userinfo",
+                    GOOGLE_USERINFO_URL,
                     headers={"Authorization": f"Bearer {access_token}"},
-                    timeout=10
+                    timeout=DEFAULT_USERINFO_REQUEST_TIMEOUT
                 )
                 if userinfo_resp.status_code == 200:
                     info = userinfo_resp.json()
@@ -173,8 +190,8 @@ class GoogleOAuthCallbackView(APIView):
                 token_defaults["refresh_token"] = refresh_token
 
             token_rec, created = UserOAuthToken.objects.update_or_create(
-                user_id=user_id or account_email or "default_user",
-                provider='google',
+                user_id=user_id or account_email or DEFAULT_USER_ID,
+                provider=PROVIDER_GOOGLE,
                 defaults=token_defaults
             )
 
@@ -201,7 +218,7 @@ class GoogleOAuthCallbackView(APIView):
     def _render_html_response(self, success: bool, title: str, message: str, user_id: str, email: str) -> HttpResponse:
         status_color = "#10b981" if success else "#ef4444"
         icon = "✓" if success else "✕"
-        event_type = "GOOGLE_OAUTH_SUCCESS" if success else "GOOGLE_OAUTH_ERROR"
+        event_type = GOOGLE_OAUTH_SUCCESS_EVENT if success else GOOGLE_OAUTH_ERROR_EVENT
 
         html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -313,9 +330,9 @@ class GoogleOAuthCallbackView(APIView):
             // Channel 1: postMessage to window.opener with both explicit origin and wildcard
             if (window.opener) {{
                 try {{
-                    window.opener.postMessage(messagePayload, 'http://localhost:3000');
+                    window.opener.postMessage(messagePayload, '{DEFAULT_FRONTEND_ORIGIN}');
                 }} catch (e) {{
-                    console.warn('postMessage to localhost:3000 failed:', e);
+                    console.warn('postMessage to {DEFAULT_FRONTEND_ORIGIN} failed:', e);
                 }}
                 try {{
                     window.opener.postMessage(messagePayload, '*');
@@ -326,7 +343,7 @@ class GoogleOAuthCallbackView(APIView):
 
             // Channel 2: BroadcastChannel (cross-window/tab on same origin)
             try {{
-                const bc = new BroadcastChannel('nexus_google_oauth');
+                const bc = new BroadcastChannel('{GOOGLE_OAUTH_BROADCAST_CHANNEL}');
                 bc.postMessage(messagePayload);
             }} catch (e) {{
                 console.warn('BroadcastChannel failed:', e);
@@ -334,7 +351,7 @@ class GoogleOAuthCallbackView(APIView):
 
             // Channel 3: localStorage event (cross-tab / cross-window on same origin)
             try {{
-                localStorage.setItem('google_oauth_completed', JSON.stringify({{
+                localStorage.setItem('{GOOGLE_OAUTH_LOCAL_STORAGE_KEY}', JSON.stringify({{
                     ...messagePayload,
                     timestamp: Date.now()
                 }}));
@@ -383,14 +400,14 @@ class GoogleOAuthStatusView(APIView):
         client_secret = getattr(settings, 'GOOGLE_OAUTH_CLIENT_SECRET', '').strip()
         is_client_configured = bool(client_id and client_secret)
 
-        token_rec = UserOAuthToken.objects.filter(user_id=user_id, provider='google').first()
+        token_rec = UserOAuthToken.objects.filter(user_id=user_id, provider=PROVIDER_GOOGLE).first()
         if not token_rec and '@' in user_id:
-            token_rec = UserOAuthToken.objects.filter(account_email=user_id, provider='google').first()
+            token_rec = UserOAuthToken.objects.filter(account_email=user_id, provider=PROVIDER_GOOGLE).first()
 
         if not token_rec:
             return Response({
                 "connected": False,
-                "provider": "google",
+                "provider": PROVIDER_GOOGLE,
                 "client_id_configured": is_client_configured,
                 "email": None,
                 "is_expired": False,
@@ -404,7 +421,7 @@ class GoogleOAuthStatusView(APIView):
             logger.info("Google OAuth grant revoked for user '%s'. DB record purged. Reason: %s", user_id, err)
             return Response({
                 "connected": False,
-                "provider": "google",
+                "provider": PROVIDER_GOOGLE,
                 "client_id_configured": is_client_configured,
                 "email": None,
                 "is_expired": True,
@@ -415,7 +432,7 @@ class GoogleOAuthStatusView(APIView):
 
         return Response({
             "connected": True,
-            "provider": "google",
+            "provider": PROVIDER_GOOGLE,
             "email": verified_email or token_rec.account_email or None,
             "client_id_configured": is_client_configured,
             "is_expired": False,

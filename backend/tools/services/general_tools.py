@@ -340,7 +340,8 @@ class EmailSenderTool:
         if not recipients:
             raise GeneralToolsError("Recipient email address (to_email) is required.")
 
-        sender = from_email or getattr(settings, 'DEFAULT_FROM_EMAIL', 'NexusAI Systems <support@nexusai.local>')
+        company = getattr(settings, 'COMPANY_NAME', 'NexusAI')
+        sender = from_email or getattr(settings, 'DEFAULT_FROM_EMAIL', f'{company} <support@nexusai.local>')
 
         AppLogger.debug("EmailSenderTool", f"Attempting SMTP dispatch to: {recipients} | Subject: '{subject}' | From: {sender}")
 
@@ -383,8 +384,9 @@ class EmailSenderTool:
     @classmethod
     def execute_plan_item(cls, item: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Dynamically executes a single send_email plan item."""
+        company = getattr(settings, 'COMPANY_NAME', 'NexusAI')
         to_email = item.get("to_email")
-        subject = item.get("subject", "NexusAI Automated Notice")
+        subject = item.get("subject", f"{company} Automated Notice")
         body = item.get("body", "")
         html_body = item.get("html_body")
         attachments = item.get("attachments")
@@ -948,7 +950,8 @@ class ToolCatalogManager:
         available_tools_catalog = cls.get_tools_catalog_for_reasoning()
         available_tool_names = cls.get_all_tool_names()
 
-        eval_prompt = f"""You are the Master Agent Tool Selector for NexusAI.
+        company = getattr(settings, 'COMPANY_NAME', 'NexusAI')
+        eval_prompt = f"""You are the Master Agent Tool Selector for {company}.
 Our toolbox contains the following General Tools:
 {available_tools_catalog}
 
@@ -1032,13 +1035,14 @@ Return ONLY a valid JSON object matching this exact schema:
         reason = decision.get("reason", "")
 
         if not can_fulfill or not tools:
+            company = getattr(settings, 'COMPANY_NAME', 'NexusAI')
             support_email = getattr(settings, 'COMPANY_SUPPORT_EMAIL', 'narainad308@gmail.com')
             user_info = f"Client: {client_name or 'Anonymous'} ({client_email or 'No email provided'})"
 
             try:
                 EmailSenderTool.send(
                     to_email=support_email,
-                    subject="[NexusAI] New Tool Capability Demand Request",
+                    subject=f"[{company}] New Tool Capability Demand Request",
                     body=(
                         f"A user requested a tool capability not currently in our toolbox:\n\n"
                         f"{user_info}\n\n"

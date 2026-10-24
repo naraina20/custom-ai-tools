@@ -3,6 +3,8 @@ import { Inter } from 'next/font/google';
 import { ClerkProvider } from '@clerk/nextjs';
 import './globals.css';
 import { ParticlesBackground } from '@/components/ui/ParticlesBackground';
+import { NotificationProvider } from '@/lib/NotificationContext';
+import { COMPANY_NAME, APP_TITLE, APP_DESCRIPTION } from '@/config/site';
 
 const inter = Inter({
   subsets: ['latin'],
@@ -11,12 +13,33 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: 'Gravita AI Gateway | Autonomous Tool Engineering & Tax Intelligence',
-  description:
-    'Enterprise AI Tool Creation, LangGraph Human-in-the-Loop Orchestration, and Indian GST/Tax Intelligence Assistant.',
+  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'),
+  title: {
+    default: APP_TITLE,
+    template: `%s | ${COMPANY_NAME}`,
+  },
+  description: APP_DESCRIPTION,
+  icons: {
+    icon: [
+      { url: '/favicon.svg', type: 'image/svg+xml' },
+      { url: '/icon.svg', type: 'image/svg+xml' },
+      { url: '/favicon.ico', sizes: 'any' },
+    ],
+    shortcut: '/favicon.svg',
+    apple: '/icon.svg',
+  },
+  openGraph: {
+    title: APP_TITLE,
+    description: APP_DESCRIPTION,
+    siteName: COMPANY_NAME,
+    type: 'website',
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: APP_TITLE,
+    description: APP_DESCRIPTION,
+  },
 };
-
-import { NotificationProvider } from '@/lib/NotificationContext';
 
 export default function RootLayout({
   children,

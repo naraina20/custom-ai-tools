@@ -6,6 +6,7 @@ import ReactMarkdown from 'react-markdown';
 import { useUser, UserButton } from '@clerk/nextjs';
 import { apiClient } from '@/lib/api-client';
 import { TaxChatMessage, TaxChatSession } from '@/lib/types';
+import { COMPANY_NAME } from '@/config/site';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Send,
@@ -199,7 +200,7 @@ export function TaxChatView() {
             <div>
               <div className="flex items-center gap-2">
                 <span className="font-bold text-sm tracking-tight text-white">
-                  Gravita Tax &amp; GST Intelligence
+                  {COMPANY_NAME} Tax &amp; GST Intelligence
                 </span>
                 <span className="hidden sm:inline-block text-[9px] font-semibold px-2 py-0.5 rounded-full bg-purple-500/15 text-purple-300 border border-purple-500/30 uppercase tracking-wider">
                   Qwen3-1.7B LoRA
@@ -467,7 +468,7 @@ export function TaxChatView() {
 
               <div className="flex flex-col sm:flex-row items-center justify-between text-[10px] text-slate-500 px-1 gap-1">
                 <span>Press <b>Enter</b> to send, <b>Shift + Enter</b> for line break</span>
-                <span>Gravita Tax AI Disclaimer: Statutory educational guidance. Not legal or CA certification.</span>
+                <span>{COMPANY_NAME} Tax AI Disclaimer: Statutory educational guidance. Not legal or CA certification.</span>
               </div>
             </div>
           </div>
@@ -512,7 +513,7 @@ export function TaxChatView() {
                   Save Your Consultation History
                 </h3>
                 <p className="text-xs text-slate-400 leading-relaxed max-w-sm mx-auto">
-                  You can use Gravita Tax AI for free as a guest. However, signing in permanently preserves your multi-turn conversation history, calculation records, and statutory bookmarks across devices.
+                  You can use {COMPANY_NAME} Tax AI for free as a guest. However, signing in permanently preserves your multi-turn conversation history, calculation records, and statutory bookmarks across devices.
                 </p>
               </div>
 

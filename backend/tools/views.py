@@ -1,4 +1,5 @@
 import logging
+from django.conf import settings
 from rest_framework import status, serializers
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -37,7 +38,8 @@ def build_schema_generator_system_prompt() -> str:
         logger.warning("Could not load capabilities from database: %s", exc)
         caps_text = "Gmail (gmail.send only), Calendar (v3), Docs (v1), Drive (v3), Forms (v1), Meet (v1), Sheets (v4)."
 
-    return f"""You are an expert AI Automation Tool Architect for the NexusAI Agent Systems Gateway.
+    company_name = getattr(settings, 'COMPANY_NAME', 'NexusAI')
+    return f"""You are an expert AI Automation Tool Architect for the {company_name} Agent Systems Gateway.
 Your goal is to parse a natural language tool description into a clean, minimal, production-grade JSON configuration connecting an LLM tool-orchestration pipeline to 7 core Google products: Gmail, Calendar, Docs, Drive, Forms, Meet, and Sheets.
 
 === SUPPORTED GOOGLE CAPABILITY MATRIX ===

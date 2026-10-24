@@ -1,5 +1,6 @@
 import json
 import logging
+from django.conf import settings
 from channels.generic.websocket import AsyncWebsocketConsumer
 
 logger = logging.getLogger(__name__)
@@ -23,10 +24,11 @@ class NotificationConsumer(AsyncWebsocketConsumer):
         logger.info("WebSocket connected for user: %s (channel: %s)", self.user_id, self.channel_name)
 
         # Send initial confirmation handshake
+        company = getattr(settings, 'COMPANY_NAME', 'NexusAI')
         await self.send(text_data=json.dumps({
             "type": "CONNECTION_ESTABLISHED",
             "user_id": self.user_id,
-            "message": "Connected to NexusAI Realtime Notification Gateway."
+            "message": f"Connected to {company} Realtime Notification Gateway."
         }))
 
     async def disconnect(self, close_code):

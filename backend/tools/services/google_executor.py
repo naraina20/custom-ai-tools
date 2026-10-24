@@ -314,8 +314,9 @@ class GoogleExecutorService:
                         or deployer_email
                     )
 
+                company = getattr(settings, 'COMPANY_NAME', 'NexusAI')
                 if not subj:
-                    tool_title = context.get('tool_title') or (context.get('tool').title if context.get('tool') else None) or 'NexusAI Assistant'
+                    tool_title = context.get('tool_title') or (context.get('tool').title if context.get('tool') else None) or f'{company} Assistant'
                     subj = f"Notification from {tool_title}"
 
                 if not text_content:
@@ -325,10 +326,10 @@ class GoogleExecutorService:
                             f"Hello,\n\n"
                             f"We have processed the following event details:\n"
                             f"{json.dumps(webhook_data, indent=2)}\n\n"
-                            f"Best regards,\nNexusAI Automation"
+                            f"Best regards,\n{company} Automation"
                         )
                     else:
-                        text_content = "Hello,\n\nThis is an automated notification from your tool.\n\nBest regards,\nNexusAI Automation"
+                        text_content = f"Hello,\n\nThis is an automated notification from your tool.\n\nBest regards,\n{company} Automation"
 
                 import base64
                 from email.mime.text import MIMEText

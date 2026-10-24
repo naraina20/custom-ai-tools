@@ -5,6 +5,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 from rest_framework import serializers
+from django.conf import settings
 from django.utils import timezone
 
 from tools.services.llm_router import LLMRouter
@@ -13,7 +14,9 @@ from .models import TaxChatSession, TaxChatMessage
 logger = logging.getLogger(__name__)
 
 
-INDIAN_TAX_SYSTEM_PROMPT = """You are Gravita Tax & GST Intelligence, an authoritative, expert Indian Chartered Accountant and Tax Specialist AI powered by fine-tuned Qwen3-1.7B (PEFT/LoRA adapter: narainad/qwen3-gst-tax-adapter).
+def get_indian_tax_system_prompt() -> str:
+    company = getattr(settings, 'COMPANY_NAME', 'NexusAI')
+    return f"""You are {company} Tax & GST Intelligence, an authoritative, expert Indian Chartered Accountant and Tax Specialist AI powered by fine-tuned Qwen3-1.7B (PEFT/LoRA adapter: narainad/qwen3-gst-tax-adapter).
 
 Your domain specialization strictly covers Indian Goods and Services Tax (GST) Compliance, Sections, Clauses, and Factual Accounting Guidance:
 1. Goods & Services Tax (GST):
@@ -34,6 +37,8 @@ Guidelines:
 - Cite specific sections of the CGST Act / Income Tax Act.
 - Conclude with a brief standard professional compliance disclaimer.
 """
+
+INDIAN_TAX_SYSTEM_PROMPT = get_indian_tax_system_prompt()
 
 
 class TaxChatHistoryItemSerializer(serializers.Serializer):

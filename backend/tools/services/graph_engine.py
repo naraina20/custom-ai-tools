@@ -554,8 +554,9 @@ def tool_planner_node(state: AgentState) -> Dict[str, Any]:
 
     # Retrieve exact schemas and tool-specific instructions dynamically for the selected tools
     tools_schemas_str = ToolCatalogManager.get_tools_schemas_for_planner(selected_tools)
+    company = getattr(settings, 'COMPANY_NAME', 'NexusAI')
 
-    planner_prompt = f"""You are the Master Agent Execution Planner for NexusAI.
+    planner_prompt = f"""You are the Master Agent Execution Planner for {company}.
 The following General Tools have been selected to fulfill this process and MUST be executed in this EXACT ORDER:
 {json.dumps(selected_tools)}
 

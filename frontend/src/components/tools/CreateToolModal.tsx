@@ -6,6 +6,7 @@ import { useUser } from '@clerk/nextjs';
 import { apiClient } from '@/lib/api-client';
 import { CustomTool, FormSchema, FormSchemaProperty, UserToolDeployment } from '@/lib/types';
 import { GoogleOAuthConsentButton } from './GoogleOAuthConsentButton';
+import { COMPANY_NAME } from '@/config/site';
 import {
   X,
   Sparkles,
@@ -1290,7 +1291,7 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
                                   <li>Go to your Google Account Security Portal: <a href="https://myaccount.google.com/security" target="_blank" rel="noreferrer" className="text-indigo-400 underline inline-flex items-center gap-1">myaccount.google.com/security <ExternalLink className="w-2.5 h-2.5 inline" /></a></li>
                                   <li>Ensure <span className="text-white font-medium">&quot;2-Step Verification&quot;</span> is turned ON.</li>
                                   <li>In the search box, search for <span className="text-white font-medium">&quot;App Passwords&quot;</span> or navigate to Security &rarr; App Passwords.</li>
-                                  <li>Enter <code className="text-indigo-300 bg-slate-900 px-1 py-0.5 rounded">NexusAI Agent</code> as the App Name and click <span className="text-white font-medium">&quot;Create&quot;</span>.</li>
+                                  <li>Enter <code className="text-indigo-300 bg-slate-900 px-1 py-0.5 rounded">{COMPANY_NAME} Agent</code> as the App Name and click <span className="text-white font-medium">&quot;Create&quot;</span>.</li>
                                   <li>Copy the 16-character generated code (without spaces) and paste it into the field above.</li>
                                 </ol>
                               </div>
@@ -1638,7 +1639,7 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
                             Platform Default Outbound Email (narainad308@gmail.com)
                           </span>
                           <span className="text-[11px] text-slate-400">
-                            Uses Gravita AI managed infrastructure. No OAuth or credentials configuration needed.
+                            Uses {COMPANY_NAME} managed infrastructure. No OAuth or credentials configuration needed.
                           </span>
                         </div>
                       </label>

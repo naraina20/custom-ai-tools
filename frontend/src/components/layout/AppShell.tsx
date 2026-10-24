@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 
 import { NotificationBell } from './NotificationPanel';
+import { COMPANY_NAME } from '@/config/site';
 
 interface AppShellProps {
   children: React.ReactNode;
@@ -54,7 +55,7 @@ export function AppShell({ children, onOpenCreateTool }: AppShellProps) {
             </div>
             <div className="min-w-0">
               <span className="font-bold text-sm tracking-tight bg-gradient-to-r from-white via-slate-100 to-slate-400 bg-clip-text text-transparent truncate block">
-                Gravita AI
+                {COMPANY_NAME}
               </span>
               <span className="block text-[9px] text-indigo-400 font-medium -mt-1 tracking-wider uppercase">
                 Gateway &amp; Tax
@@ -218,7 +219,7 @@ export function AppShell({ children, onOpenCreateTool }: AppShellProps) {
                   <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white">
                     <Zap className="w-4 h-4" />
                   </div>
-                  <span className="font-bold text-slate-100">Gravita AI</span>
+                  <span className="font-bold text-slate-100">{COMPANY_NAME}</span>
                 </div>
                 <button
                   onClick={() => setMobileMenuOpen(false)}
@@ -400,7 +401,7 @@ export function AppShell({ children, onOpenCreateTool }: AppShellProps) {
               <Menu className="w-5 h-5" />
             </button>
             <span className="font-semibold text-sm text-slate-100">
-              Gravita AI
+              {COMPANY_NAME}
             </span>
           </div>
 
