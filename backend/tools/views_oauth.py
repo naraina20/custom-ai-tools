@@ -19,6 +19,8 @@ from .oauth_constants import (
     GOOGLE_TOKEN_URL,
     GOOGLE_USERINFO_URL,
     DEFAULT_GOOGLE_SCOPES,
+    GOOGLE_SCOPE_USERINFO_EMAIL,
+    GOOGLE_SCOPE_OPENID,
     DEFAULT_GOOGLE_OAUTH_REDIRECT_URI,
     DEFAULT_USER_ID,
     DEFAULT_TOKEN_EXPIRY_SECONDS,
@@ -71,7 +73,14 @@ class GoogleOAuthInitView(APIView):
             )
 
         requested_scope = request.query_params.get('scope')
-        scope = requested_scope or DEFAULT_GOOGLE_SCOPES
+        if requested_scope:
+            req_scopes = requested_scope.split()
+            for base in [GOOGLE_SCOPE_USERINFO_EMAIL, GOOGLE_SCOPE_OPENID]:
+                if base not in req_scopes:
+                    req_scopes.append(base)
+            scope = " ".join(req_scopes)
+        else:
+            scope = DEFAULT_GOOGLE_SCOPES
 
         state_payload = json.dumps({"user_id": str(user_id)})
 
@@ -382,6 +391,126 @@ class GoogleOAuthCallbackView(APIView):
         return HttpResponse(html, content_type="text/html; charset=utf-8")
 
 
+class GoogleOAuthCodeExchangeView(APIView):
+    """
+    POST /api/oauth/google/exchange-code/
+    Body: {"code": "<auth_code>", "user_id": "<user_id>", "redirect_uri": "postmessage"}
+    Exchanges an authorization code obtained via Google Identity Services (GIS) / @react-oauth/google
+    for access & refresh tokens, stores them in UserOAuthToken, and returns active permission status.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        code = request.data.get('code')
+        user_id = request.data.get('user_id') or getattr(request.user, 'user_id', None) or request.headers.get('X-User-Id')
+        redirect_uri = request.data.get('redirect_uri') or 'postmessage'
+
+        if not code:
+            return Response({"error": "Authorization code is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        client_id = getattr(settings, 'GOOGLE_OAUTH_CLIENT_ID', '').strip()
+        client_secret = getattr(settings, 'GOOGLE_OAUTH_CLIENT_SECRET', '').strip()
+
+        if not client_id or not client_secret:
+            return Response(
+                {"error": "Google OAuth is not configured on the backend. Missing client ID or secret in .env."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        token_payload = {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "code": code,
+            "grant_type": OAUTH_GRANT_TYPE_AUTHORIZATION_CODE,
+            "redirect_uri": redirect_uri,
+        }
+        print(f"token_payload ===> : {token_payload}")
+
+        try:
+            resp = requests.post(GOOGLE_TOKEN_URL, data=token_payload, timeout=DEFAULT_TOKEN_REQUEST_TIMEOUT)
+            if resp.status_code != 200:
+                logger.error("Failed to exchange GIS Google OAuth code: %s", resp.text)
+                return Response(
+                    {"error": "Google token exchange failed.", "details": resp.text},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            token_data = resp.json()
+            access_token = token_data.get("access_token")
+            refresh_token = token_data.get("refresh_token")
+            expires_in = token_data.get("expires_in", DEFAULT_TOKEN_EXPIRY_SECONDS)
+
+            account_email = ""
+            try:
+                userinfo_resp = requests.get(
+                    GOOGLE_USERINFO_URL,
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    timeout=DEFAULT_USERINFO_REQUEST_TIMEOUT
+                )
+                if userinfo_resp.status_code == 200:
+                    info = userinfo_resp.json()
+                    account_email = info.get("email", "")
+            except Exception as e:
+                logger.warning("Could not fetch Google userinfo email: %s", str(e))
+
+            effective_user_id = user_id or account_email or DEFAULT_USER_ID
+
+            token_defaults = {
+                "account_email": account_email,
+                "access_token": access_token,
+                "token_expiry": timezone.now() + timedelta(seconds=expires_in),
+            }
+            if refresh_token:
+                token_defaults["refresh_token"] = refresh_token
+
+            token_rec, created = UserOAuthToken.objects.update_or_create(
+                user_id=effective_user_id,
+                provider=PROVIDER_GOOGLE,
+                defaults=token_defaults
+            )
+
+            logger.info("Successfully saved Google OAuth credentials for user '%s' (%s) via GIS code exchange", token_rec.user_id, account_email)
+
+            # Sync and retrieve granted scopes and products
+            is_active, verified_email, granted_scopes, err = OAuthService.verify_and_sync_google_token(token_rec)
+
+            granted_products = []
+            for s in (granted_scopes or []):
+                if "gmail.send" in s:
+                    granted_products.append("gmail")
+                if "spreadsheets" in s:
+                    granted_products.append("sheets")
+                if "drive.file" in s:
+                    granted_products.append("drive_picker")
+                elif "drive" in s:
+                    granted_products.append("drive")
+                if "documents" in s:
+                    granted_products.append("docs")
+                if "meetings" in s:
+                    granted_products.append("meet")
+                if "calendar" in s:
+                    granted_products.append("calendar")
+                if "forms" in s:
+                    granted_products.append("forms")
+            granted_products = list(dict.fromkeys(granted_products))
+
+            return Response({
+                "success": True,
+                "connected": True,
+                "provider": PROVIDER_GOOGLE,
+                "email": verified_email or account_email or token_rec.account_email,
+                "granted_scopes": granted_scopes or [],
+                "granted_products": granted_products,
+            }, status=status.HTTP_200_OK)
+
+        except Exception as exc:
+            logger.error("Exception during GIS Google OAuth code exchange: %s", str(exc), exc_info=True)
+            return Response(
+                {"error": f"Internal server error during Google authorization exchange: {str(exc)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
 class GoogleOAuthStatusView(APIView):
     """
     GET /api/oauth/google/status/?user_id=<user_id>
@@ -411,11 +540,13 @@ class GoogleOAuthStatusView(APIView):
                 "client_id_configured": is_client_configured,
                 "email": None,
                 "is_expired": False,
-                "has_refresh_token": False
+                "has_refresh_token": False,
+                "granted_scopes": [],
+                "granted_products": [],
             }, status=status.HTTP_200_OK)
 
         # Actively verify with Google that access is still granted and token is valid
-        is_active, verified_email, err = OAuthService.verify_and_sync_google_token(token_rec)
+        is_active, verified_email, granted_scopes, err = OAuthService.verify_and_sync_google_token(token_rec)
 
         if not is_active:
             logger.info("Google OAuth grant revoked for user '%s'. DB record purged. Reason: %s", user_id, err)
@@ -427,8 +558,31 @@ class GoogleOAuthStatusView(APIView):
                 "is_expired": True,
                 "has_refresh_token": False,
                 "revoked": True,
+                "granted_scopes": [],
+                "granted_products": [],
                 "message": err or "Google access was revoked. Database record cleared."
             }, status=status.HTTP_200_OK)
+
+        # Identify granted Google product categories from granted_scopes
+        granted_products = []
+        for s in (granted_scopes or []):
+            if "gmail.send" in s:
+                granted_products.append("gmail")
+            if "spreadsheets" in s:
+                granted_products.append("sheets")
+            if "drive.file" in s:
+                granted_products.append("drive_picker")
+            elif "drive" in s:
+                granted_products.append("drive")
+            if "documents" in s:
+                granted_products.append("docs")
+            if "meetings" in s:
+                granted_products.append("meet")
+            if "calendar" in s:
+                granted_products.append("calendar")
+            if "forms" in s:
+                granted_products.append("forms")
+        granted_products = list(dict.fromkeys(granted_products))
 
         return Response({
             "connected": True,
@@ -437,6 +591,8 @@ class GoogleOAuthStatusView(APIView):
             "client_id_configured": is_client_configured,
             "is_expired": False,
             "has_refresh_token": bool(token_rec.refresh_token),
+            "granted_scopes": granted_scopes or [],
+            "granted_products": granted_products,
             "created_at": token_rec.created_at.isoformat(),
             "updated_at": token_rec.updated_at.isoformat()
         }, status=status.HTTP_200_OK)
@@ -476,3 +632,70 @@ class GoogleOAuthRevokeView(APIView):
             "success": success,
             "message": msg
         }, status=status.HTTP_200_OK)
+
+
+class GooglePickerConfigView(APIView):
+    """
+    GET /api/oauth/google/picker-config/?user_id=<user_id>
+    Provides the Google Drive Picker initialization parameters:
+    developerKey, clientId, active temporary OAuth access token, and app numeric ID.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, *args, **kwargs):
+        user_id = getattr(request.user, 'user_id', None) or request.headers.get('X-User-Id') or request.query_params.get('user_id')
+        if not user_id:
+            return Response({"error": "user_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        client_id = getattr(settings, 'GOOGLE_OAUTH_CLIENT_ID', '').strip()
+        developer_key = getattr(settings, 'GOOGLE_DEVELOPER_KEY', '').strip() or getattr(settings, 'GEMINI_API_KEY', '').strip()
+        app_id = client_id.split('-')[0] if '-' in client_id else ""
+
+        token_rec = UserOAuthToken.objects.filter(user_id=user_id, provider=PROVIDER_GOOGLE).first()
+        if not token_rec and '@' in user_id:
+            token_rec = UserOAuthToken.objects.filter(account_email=user_id, provider=PROVIDER_GOOGLE).first()
+
+        access_token = None
+        has_token = False
+        has_drive_file = False
+        email = None
+        granted_products = []
+        granted_scopes = []
+
+        if token_rec:
+            is_active, verified_email, granted_scopes, err = OAuthService.verify_and_sync_google_token(token_rec)
+            if is_active:
+                for s in (granted_scopes or []):
+                    if "gmail.send" in s:
+                        granted_products.append("gmail")
+                    if "spreadsheets" in s:
+                        granted_products.append("sheets")
+                    if "drive.file" in s:
+                        granted_products.append("drive_picker")
+                        has_drive_file = True
+                    elif "drive" in s:
+                        granted_products.append("drive")
+                        has_drive_file = True
+                    if "documents" in s:
+                        granted_products.append("docs")
+
+                success, token, refresh_err = OAuthService.get_or_refresh_token(token_rec.user_id, PROVIDER_GOOGLE)
+                if success and token:
+                    access_token = token
+                    email = verified_email or token_rec.account_email
+                    has_token = True
+
+        return Response({
+            "developerKey": developer_key,
+            "clientId": client_id,
+            "appId": app_id,
+            "token": access_token,
+            "email": email,
+            "configured": bool(developer_key and client_id),
+            "has_token": has_token,
+            "has_drive_file": has_drive_file,
+            "needs_oauth": not (has_token and has_drive_file),
+            "granted_products": granted_products,
+            "granted_scopes": granted_scopes,
+        }, status=status.HTTP_200_OK)
+

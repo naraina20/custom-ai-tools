@@ -21,13 +21,27 @@ export interface CustomTool {
   requires_oauth: boolean;
   oauth_provider: 'none' | 'google' | 'github';
   requires_hitl: boolean;
+  tasks?: string;
   add_gmail_oauth_flag?: boolean;
   google_products?: string[];
+  google_products_detected?: string[];
+  specification_summary?: string;
   google_auth_mode?: string;
   form_schema: FormSchema;
   webhook_secret?: string;
   created_at: string;
   updated_at?: string;
+}
+
+export interface ExtractTasksResponse {
+  title: string;
+  original_prompt: string;
+  description?: string;
+  tasks: string[];
+  tasks_text: string;
+  tasks_paragraph?: string;
+  notes?: string;
+  admin_rules?: string[];
 }
 
 export interface GeneratedSchemaResponse {
@@ -39,6 +53,7 @@ export interface GeneratedSchemaResponse {
   google_auth_flow_required?: 'both' | 'gmail' | 'drive_workspace' | 'none';
   title?: string;
   description?: string;
+  tasks?: string;
   requires_oauth: boolean;
   oauth_provider: 'none' | 'google' | 'github';
   requires_hitl: boolean;
@@ -139,3 +154,61 @@ export interface ApiProxyResponse<T = any> {
   details?: any;
   requestId?: string;
 }
+
+export interface GoogleOAuthStatusResponse {
+  connected: boolean;
+  provider: string;
+  client_id_configured: boolean;
+  email?: string;
+  is_expired?: boolean;
+  has_refresh_token?: boolean;
+  revoked?: boolean;
+  granted_scopes?: string[];
+  granted_products?: string[];
+  message?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface GooglePickerConfigPayload {
+  developerKey: string;
+  clientId: string;
+  token?: string | null;
+  viewMimeTypes?: string;
+  showUploadView?: boolean;
+  supportDrives?: boolean;
+  appId?: string;
+}
+
+export interface GooglePickerConfigResponse {
+  developerKey: string;
+  clientId: string;
+  appId?: string;
+  token?: string | null;
+  email?: string | null;
+  configured: boolean;
+  has_token: boolean;
+  has_drive_file?: boolean;
+  needs_oauth?: boolean;
+  granted_products?: string[];
+  granted_scopes?: string[];
+}
+
+export interface GooglePickerDoc {
+  id: string;
+  name: string;
+  mimeType: string;
+  type: string;
+  url: string;
+  lastEditedUtc?: number;
+  iconUrl?: string;
+  sizeBytes?: number;
+  parentId?: string;
+  serviceId?: string;
+}
+
+export interface GooglePickerResponse {
+  action: 'picked' | 'cancel';
+  docs?: GooglePickerDoc[];
+}
+

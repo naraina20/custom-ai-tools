@@ -9,6 +9,7 @@ from typing import Annotated, Any, Dict, Iterator, List, Optional, Sequence, Tup
 import requests
 from asgiref.sync import sync_to_async
 from django.conf import settings
+from django.db import close_old_connections, connection
 from django.utils import timezone
 
 from langchain_core.runnables import RunnableConfig
@@ -372,32 +373,18 @@ def tool_selector_node(state: AgentState) -> Dict[str, Any]:
     deployer_email = deployer_data.get("email") or deploy_tool_data.get("email") or deploy_tool_data.get("personal_email")
     deployer_name = deployer_data.get("name") or deployer_data.get("user_id") or user_id
 
-    # 2. Check Tool Catalog Demand & Ordered Tool Selection via High Reasoning LLM
-    demand_check = ToolCatalogManager.check_demand_or_escalate(
-        description=tool.description,
-        client_email=deployer_email,
-        client_name=deployer_name,
-    )
-    if demand_check.get("escalated"):
-        AppLogger.log_critical(
-            message=f"Tool catalog demand escalation: {demand_check['message']}",
-            category="graph_execution",
-            tool=tool,
-            deploy_tool_data=deploy_tool_data,
-            webhook_data=webhook_data,
-            deployer_data=deployer_data,
-            tool_owner_data=tool_owner_data,
-            execution_context={"node": "tool_selector_node", "reason": demand_check.get("reason", "")}
-        )
-        return {
-            "error": demand_check["message"],
-            "execution_result": {"status": "escalated", "message": demand_check["message"]},
-            "messages": [{"role": "assistant", "content": demand_check["message"]}],
-        }
+    # 2. Build effective description with confirmed tasks appended
+    effective_description = tool.description
+    if getattr(tool, 'tasks', None) and tool.tasks.strip():
+        effective_description += f"\n\nConfirmed Step-by-Step Execution Tasks:\n{tool.tasks.strip()}"
 
-    selected_tools = demand_check.get("selected_tools") or []
+    # 3. Ordered Tool Selection via High Reasoning LLM
+    decision = ToolCatalogManager.decide_required_tools(
+        description=effective_description,
+    )
+    selected_tools = decision.get("selected_tools") or []
     if not selected_tools:
-        # Fallback to data_response if no tools matched
+        # Fallback to data_response if no specific action tools matched
         selected_tools = ["data_response"]
 
     # 3. Resolve OAuth if required
@@ -413,7 +400,7 @@ def tool_selector_node(state: AgentState) -> Dict[str, Any]:
     AppLogger.step(
         "Node 1: Tool Selector",
         f"Selected general tools for '{tool.title}': {selected_tools}",
-        {"selected_tools": selected_tools, "reason": demand_check.get("reason", "")}
+        {"selected_tools": selected_tools, "reason": decision.get("reason", "")}
     )
 
     out_payload = {
@@ -430,7 +417,7 @@ def tool_selector_node(state: AgentState) -> Dict[str, Any]:
         "messages": [
             {
                 "role": "assistant",
-                "content": f"Node 1: Evaluated AI-tool description. Selected ordered general tools: {selected_tools}. Reason: {demand_check.get('reason', '')}",
+                "content": f"Node 1: Evaluated AI-tool description. Selected ordered general tools: {selected_tools}. Reason: {decision.get('reason', '')}",
             }
         ],
     }
@@ -556,6 +543,21 @@ def tool_planner_node(state: AgentState) -> Dict[str, Any]:
     tools_schemas_str = ToolCatalogManager.get_tools_schemas_for_planner(selected_tools)
     company = getattr(settings, 'COMPANY_NAME', 'NexusAI')
 
+    sheet_context_section = ""
+    if "write_sheet" in selected_tools:
+        from tools.services.sheets_service import get_sheet_planner_context
+        caller_uid = state.get("user_id") or deployer_data.get("user_id")
+        deployment_id = state.get("deployment_id") or deploy_tool_data.get("deployment_id")
+        sheet_context_section = get_sheet_planner_context(
+            deploy_tool_data=deploy_tool_data,
+            user_id=caller_uid,
+            deployment_id=deployment_id,
+        )
+
+    effective_description = tool.description
+    if getattr(tool, 'tasks', None) and tool.tasks.strip():
+        effective_description += f"\n\nConfirmed Step-by-Step Execution Tasks:\n{tool.tasks.strip()}"
+
     planner_prompt = f"""You are the Master Agent Execution Planner for {company}.
 The following General Tools have been selected to fulfill this process and MUST be executed in this EXACT ORDER:
 {json.dumps(selected_tools)}
@@ -563,10 +565,12 @@ The following General Tools have been selected to fulfill this process and MUST 
 Below are the EXACT Schemas, supported execution modes, and schema-mapping instructions for each selected tool:
 {tools_schemas_str}
 
+if we have write_sheet tool in our list to execute then read these instuction and extra data about the sheet : {sheet_context_section}
+
 === Context & Available Data Definitions ===
 AI-Tool Title: {tool.title}
 AI-Tool Description / User Instructions:
-"{tool.description}"
+"{effective_description}"
 
 1. Deploy Tool Data (`deploy_tool_data`):
 Description: {data_descriptions.get("deploy_tool_data")}
@@ -624,6 +628,16 @@ Return ONLY a valid JSON object matching this exact structure:
         execution_plans = data.get("execution_plans") or []
         if not isinstance(execution_plans, list) or len(execution_plans) == 0:
             raise GeneralToolsError("LLM planner returned an empty or invalid execution_plans list.")
+
+        # Log what LLM returned for each planned tool
+        for plan in execution_plans:
+            plan_tool = plan.get("tool")
+            items = plan.get("items", [])
+            AppLogger.debug(
+                "Node 2: Tool Planner",
+                f"LLM Planned Tool Output for [{plan_tool}] (Mode: {plan.get('execution_mode')}, Items: {len(items)}):",
+                details=plan
+            )
 
     except Exception as plan_err:
         AppLogger.log_critical(
@@ -907,7 +921,11 @@ def tool_executor(state: AgentState) -> Dict[str, Any]:
                 or f"Item #{idx}"
             )
 
-            AppLogger.debug("Node 4: Tool Executor", f"[{tool_name}] Executing item: {item_ref}")
+            AppLogger.debug(
+                "Node 4: Tool Executor",
+                f"[{tool_name}] Executing item {idx}/{len(items)} (Ref: {item_ref}):",
+                details=item
+            )
 
             # 1. Schema & Required Field Validation on General Tool level
             is_valid, val_err = ToolCatalogManager.validate_tool_plan_item(tool_name, item)
@@ -1020,6 +1038,21 @@ def tool_executor(state: AgentState) -> Dict[str, Any]:
         "Node 4: Tool Executor",
         f"Execution complete for '{tool_title}': {total_success_count} succeeded, {len(failed_items)} failed.",
         {"total_success": total_success_count, "failed_count": len(failed_items)}
+    )
+
+    succeeded_details = [
+        {"tool": p.get("tool"), "item": r.get("item_reference")}
+        for p in executed_results
+        for r in p.get("successful_items", [])
+    ]
+    failed_details = [
+        {"tool": f.get("tool"), "item": f.get("item_reference"), "error": f.get("error_message")}
+        for f in failed_items
+    ]
+    AppLogger.debug(
+        "Node 4: Tool Executor",
+        f"Execution Item Breakdown ({total_success_count} succeeded, {len(failed_items)} failed):",
+        details={"succeeded_items": succeeded_details, "failed_items": failed_details}
     )
 
     # 3. Post-execution Alert Dispatch if any item failed
@@ -1301,6 +1334,7 @@ class GraphEngine:
                     f"HITL not required (requires_hitl=False). Proceeding to execute tool_executor... Thread: {tid}"
                 )
                 try:
+                    close_old_connections()
                     output = app.invoke(None, config=config)
                 except Exception as exc:
                     AppLogger.error("GraphEngine", f"tool_executor resumption failed for Tool #{tool_id}: {exc}", exc=exc)
@@ -1373,6 +1407,7 @@ class GraphEngine:
         if decision_clean == "approve":
             app.update_state(config, {"approval_status": "approved"})
             try:
+                close_old_connections()
                 resumed_output = app.invoke(None, config=config)
                 AppLogger.step("GraphEngine", f"Resumed execution completed successfully for thread {thread_id}")
                 return {

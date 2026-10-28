@@ -51,6 +51,7 @@ class SharedUserAssetSerializer(serializers.ModelSerializer):
         fields = [
             'id',
             'user_id',
+            'deployment',
             'google_file_or_folder_id',
             'asset_name',
             'mime_type',
@@ -106,6 +107,7 @@ class CustomToolSerializer(serializers.ModelSerializer):
             'id',
             'title',
             'description',
+            'tasks',
             'slug',
             'author_id',
             'is_public',
@@ -150,6 +152,7 @@ class CustomToolPublicSerializer(serializers.ModelSerializer):
             'id',
             'title',
             'description',
+            'tasks',
             'slug',
             'author_id',
             'is_public',

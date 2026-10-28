@@ -2,6 +2,7 @@ from django.urls import path
 from .views import (
     GenerateSchemaView,
     ImproveDescriptionView,
+    ExtractToolTasksView,
     CreateToolView,
     MarketplaceToolsView,
     MyToolsView,
@@ -20,17 +21,29 @@ from .views_webhooks import (
 from .views_oauth import (
     GoogleOAuthInitView,
     GoogleOAuthCallbackView,
+    GoogleOAuthCodeExchangeView,
     GoogleOAuthStatusView,
     GoogleOAuthRevokeView,
+    GooglePickerConfigView,
+)
+from .views_sheets import (
+    SheetsInfoView,
+    SheetsSampleView,
+    SheetsGenerateView,
+    SheetsWriteView,
 )
 
 urlpatterns = [
     # Google OAuth Consent & Token Management
     path('oauth/google/init/', GoogleOAuthInitView.as_view(), name='google-oauth-init'),
     path('oauth/google/callback/', GoogleOAuthCallbackView.as_view(), name='google-oauth-callback'),
+    path('oauth/google/exchange-code/', GoogleOAuthCodeExchangeView.as_view(), name='google-oauth-exchange-code'),
     path('oauth/google/status/', GoogleOAuthStatusView.as_view(), name='google-oauth-status'),
     path('oauth/google/revoke/', GoogleOAuthRevokeView.as_view(), name='google-oauth-revoke'),
-    # Milestone 1: Tool CRUD & Schema Generator & AI Description Improver
+    path('oauth/google/picker-config/', GooglePickerConfigView.as_view(), name='google-picker-config'),
+
+    # Milestone 1: Tool CRUD & Schema Generator & AI Description Improver & Task Extractor
+    path('tools/extract-tasks/', ExtractToolTasksView.as_view(), name='tools-extract-tasks'),
     path('tools/generate-schema/', GenerateSchemaView.as_view(), name='tools-generate-schema'),
     path('tools/improve-description/', ImproveDescriptionView.as_view(), name='tools-improve-description'),
     path('tools/create/', CreateToolView.as_view(), name='tools-create'),
@@ -49,4 +62,10 @@ urlpatterns = [
     # Milestone 4: Universal Catch-All Inbound Webhook (supports tool & user secrets)
     path('webhooks/<uuid:webhook_secret>/', WebhookIngestView.as_view(), name='webhook-ingest'),
     path('webhooks/jobs/<int:job_id>/', WebhookJobStatusView.as_view(), name='webhook-job-status'),
+
+    # Google Sheets API v4 Endpoints
+    path('sheets/<str:file_id>/info/', SheetsInfoView.as_view(), name='sheets-info'),
+    path('sheets/<str:file_id>/sample/', SheetsSampleView.as_view(), name='sheets-sample'),
+    path('sheets/<str:file_id>/generate/', SheetsGenerateView.as_view(), name='sheets-generate'),
+    path('sheets/<str:file_id>/write/', SheetsWriteView.as_view(), name='sheets-write'),
 ]

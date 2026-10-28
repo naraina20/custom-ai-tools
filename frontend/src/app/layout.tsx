@@ -4,6 +4,7 @@ import { ClerkProvider } from '@clerk/nextjs';
 import './globals.css';
 import { ParticlesBackground } from '@/components/ui/ParticlesBackground';
 import { NotificationProvider } from '@/lib/NotificationContext';
+import { GoogleAuthProvider } from '@/components/providers/GoogleAuthProvider';
 import { COMPANY_NAME, APP_TITLE, APP_DESCRIPTION } from '@/config/site';
 
 const inter = Inter({
@@ -59,9 +60,11 @@ export default function RootLayout({
         <body className="min-h-screen bg-[var(--background)] text-[var(--foreground)] antialiased font-sans selection:bg-indigo-500/30 selection:text-indigo-200">
           <ParticlesBackground />
           <NotificationProvider>
-            <div className="relative z-10 min-h-screen flex flex-col">
-              {children}
-            </div>
+            <GoogleAuthProvider>
+              <div className="relative z-10 min-h-screen flex flex-col">
+                {children}
+              </div>
+            </GoogleAuthProvider>
           </NotificationProvider>
         </body>
       </html>

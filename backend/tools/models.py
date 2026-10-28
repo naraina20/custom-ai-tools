@@ -13,6 +13,11 @@ class CustomTool(models.Model):
 
     title = models.CharField(max_length=255, help_text="Human-readable title of the tool")
     description = models.TextField(help_text="Detailed description of tool functionality")
+    tasks = models.TextField(
+        blank=True,
+        default="",
+        help_text="Confirmed extracted task points for deterministic execution"
+    )
     slug = models.SlugField(max_length=255, unique=True, blank=True, help_text="Unique slug identifier")
     author_id = models.CharField(max_length=255, db_index=True, help_text="Clerk User ID of creator")
     is_public = models.BooleanField(default=True, db_index=True, help_text="Whether tool appears on marketplace")
@@ -361,6 +366,14 @@ class SharedUserAsset(models.Model):
     ]
 
     user_id = models.CharField(max_length=255, db_index=True, help_text="Clerk User ID of the asset owner/delegator")
+    deployment = models.ForeignKey(
+        'UserToolDeployment',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='shared_assets',
+        help_text="Connected UserToolDeployment instance"
+    )
     google_file_or_folder_id = models.CharField(max_length=255, db_index=True, help_text="Google Drive File or Folder ID")
     asset_name = models.CharField(max_length=255, blank=True, default="", help_text="Display title or name of the asset")
     mime_type = models.CharField(max_length=100, blank=True, default="", help_text="MIME type of the asset")
@@ -380,6 +393,7 @@ class SharedUserAsset(models.Model):
         indexes = [
             models.Index(fields=['user_id', 'is_verified']),
             models.Index(fields=['google_file_or_folder_id']),
+            models.Index(fields=['deployment']),
         ]
         ordering = ['-created_at']
 

@@ -6,8 +6,11 @@ import {
   TaxChatMessage,
   TaxChatSession,
   GeneratedSchemaResponse,
+  ExtractTasksResponse,
   GoogleCapability,
   SharedUserAsset,
+  GoogleOAuthStatusResponse,
+  GooglePickerConfigResponse,
 } from './types';
 
 export class ApiError extends Error {
@@ -76,10 +79,21 @@ export const apiClient = {
     });
   },
 
-  async generateSchema(description: string): Promise<GeneratedSchemaResponse> {
+  async extractTasks(payload: {
+    description: string;
+    feedback?: string;
+    current_tasks?: string[];
+  }): Promise<ExtractTasksResponse> {
+    return fetchFromProxy<ExtractTasksResponse>('tools/extract-tasks/', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async generateSchema(description: string, tasks?: string): Promise<GeneratedSchemaResponse> {
     return fetchFromProxy<GeneratedSchemaResponse>('tools/generate-schema/', {
       method: 'POST',
-      body: JSON.stringify({ description }),
+      body: JSON.stringify({ description, tasks }),
     });
   },
 
@@ -104,8 +118,10 @@ export const apiClient = {
     user_id: string;
     google_file_or_folder_id: string;
     asset_name?: string;
+    mime_type?: string;
     product_name?: string;
     delegation_type?: string;
+    metadata?: Record<string, any>;
   }): Promise<{
     asset: SharedUserAsset;
     is_verified: boolean;
@@ -122,6 +138,7 @@ export const apiClient = {
   async createTool(payload: {
     title: string;
     description: string;
+    tasks?: string;
     form_schema: FormSchema;
     requires_oauth?: boolean;
     oauth_provider?: string;
@@ -229,17 +246,8 @@ export const apiClient = {
     return fetchFromProxy(`oauth/google/init/?${params.toString()}`);
   },
 
-  async getGoogleOAuthStatus(userId: string): Promise<{
-    connected: boolean;
-    provider: string;
-    client_id_configured: boolean;
-    email?: string;
-    is_expired?: boolean;
-    has_refresh_token?: boolean;
-    revoked?: boolean;
-    message?: string;
-  }> {
-    return fetchFromProxy(`oauth/google/status/?user_id=${encodeURIComponent(userId)}`);
+  async getGoogleOAuthStatus(userId: string): Promise<GoogleOAuthStatusResponse> {
+    return fetchFromProxy<GoogleOAuthStatusResponse>(`oauth/google/status/?user_id=${encodeURIComponent(userId)}`);
   },
 
   async revokeGoogleOAuth(userId: string): Promise<{
@@ -252,5 +260,25 @@ export const apiClient = {
       body: JSON.stringify({ user_id: userId }),
     });
   },
+
+  async exchangeGoogleAuthCode(userId: string, code: string, redirectUri = 'postmessage'): Promise<{
+    success: boolean;
+    connected: boolean;
+    provider?: string;
+    email?: string;
+    granted_scopes?: string[];
+    granted_products?: string[];
+    error?: string;
+  }> {
+    return fetchFromProxy('oauth/google/exchange-code/', {
+      method: 'POST',
+      body: JSON.stringify({ user_id: userId, code, redirect_uri: redirectUri }),
+    });
+  },
+
+  async getGooglePickerConfig(userId: string): Promise<GooglePickerConfigResponse> {
+    return fetchFromProxy<GooglePickerConfigResponse>(`oauth/google/picker-config/?user_id=${encodeURIComponent(userId)}`);
+  },
 };
+
 

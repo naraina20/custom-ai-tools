@@ -31,6 +31,13 @@ GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
 GOOGLE_SCOPE_GMAIL_SEND = "https://www.googleapis.com/auth/gmail.send"
 GOOGLE_SCOPE_USERINFO_EMAIL = "https://www.googleapis.com/auth/userinfo.email"
 GOOGLE_SCOPE_OPENID = "openid"
+GOOGLE_SCOPE_SPREADSHEETS = "https://www.googleapis.com/auth/spreadsheets"
+GOOGLE_SCOPE_DRIVE = "https://www.googleapis.com/auth/drive"
+GOOGLE_SCOPE_DRIVE_FILE = "https://www.googleapis.com/auth/drive.file"
+GOOGLE_SCOPE_DOCUMENTS = "https://www.googleapis.com/auth/documents"
+GOOGLE_SCOPE_MEET = "https://www.googleapis.com/auth/meetings.space.created"
+GOOGLE_SCOPE_CALENDAR = "https://www.googleapis.com/auth/calendar"
+GOOGLE_SCOPE_FORMS = "https://www.googleapis.com/auth/forms.body"
 
 # Default scopes requested during Google OAuth initiation
 DEFAULT_GOOGLE_SCOPES = (
@@ -38,6 +45,20 @@ DEFAULT_GOOGLE_SCOPES = (
     f"{GOOGLE_SCOPE_USERINFO_EMAIL} "
     f"{GOOGLE_SCOPE_OPENID}"
 )
+
+# Product mapping to OAuth scopes
+GOOGLE_PRODUCT_SCOPES = {
+    "gmail": GOOGLE_SCOPE_GMAIL_SEND,
+    "sheets": GOOGLE_SCOPE_SPREADSHEETS,
+    "sheet": GOOGLE_SCOPE_SPREADSHEETS,
+    "drive": GOOGLE_SCOPE_DRIVE,
+    "drive_picker": GOOGLE_SCOPE_DRIVE_FILE,
+    "docs": GOOGLE_SCOPE_DOCUMENTS,
+    "doc": GOOGLE_SCOPE_DOCUMENTS,
+    "meet": GOOGLE_SCOPE_MEET,
+    "calendar": GOOGLE_SCOPE_CALENDAR,
+    "forms": GOOGLE_SCOPE_FORMS,
+}
 
 # ==============================================================================
 # OAuth Protocol Parameters & Grant Types

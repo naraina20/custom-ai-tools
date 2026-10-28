@@ -89,6 +89,23 @@ if DATABASE_URL.startswith(('postgres://', 'postgresql://')):
 
     is_remote = pg_host not in ('localhost', '127.0.0.1')
 
+    # Supabase Transaction Pooler Optimization:
+    # Port 5432 on Supabase pooler runs in 'session' mode (max 15 connections total).
+    # Port 6543 runs in 'transaction' mode (handles high concurrency without session limits).
+    is_supabase_pooler = 'pooler.supabase.com' in pg_host
+    if is_supabase_pooler and pg_port == 5432:
+        pg_port = 6543
+
+    db_options = {
+        'connect_timeout': 10,
+    }
+    if is_supabase_pooler or pg_port == 6543:
+        # Supabase transaction pooler (port 6543) requires disabling server-side cursors
+        db_options['options'] = '-c search_path=public'
+        DISABLE_SERVER_SIDE_CURSORS = True
+    else:
+        DISABLE_SERVER_SIDE_CURSORS = False
+
     # If it is a remote database (e.g. Supabase, RDS) or local port is open, use PostgreSQL
     if is_remote or _check_socket(pg_host, pg_port):
         DATABASES = {
@@ -99,6 +116,9 @@ if DATABASE_URL.startswith(('postgres://', 'postgresql://')):
                 'PASSWORD': pg_password,
                 'HOST': pg_host,
                 'PORT': str(pg_port),
+                'CONN_MAX_AGE': config('DB_CONN_MAX_AGE', default=0, cast=int),
+                'OPTIONS': db_options,
+                'DISABLE_SERVER_SIDE_CURSORS': DISABLE_SERVER_SIDE_CURSORS,
             }
         }
     else:
@@ -193,6 +213,8 @@ GOOGLE_OAUTH_REDIRECT_URI = config(
     'GOOGLE_OAUTH_REDIRECT_URI',
     default='http://localhost:3000/api/proxy/oauth/google/callback/'
 )
+GOOGLE_DEVELOPER_KEY = config('GOOGLE_DEVELOPER_KEY', default=config('GEMINI_API_KEY', default=''))
+
 
 
 # Brand & Email Configuration

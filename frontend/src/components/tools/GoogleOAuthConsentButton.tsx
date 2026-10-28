@@ -1,61 +1,150 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useGoogleLogin, useGoogleOAuth } from '@react-oauth/google';
 import { apiClient } from '@/lib/api-client';
+import { GoogleOAuthStatusResponse } from '@/lib/types';
 import {
   CheckCircle2,
   AlertCircle,
   ExternalLink,
   Loader2,
-  RefreshCw,
   KeyRound,
-  ShieldCheck,
   AlertTriangle,
 } from 'lucide-react';
 
-interface GoogleOAuthConsentButtonProps {
+export interface GoogleOAuthConsentButtonProps {
   userId: string;
+  scope?: string;
+  requiredProducts?: string[];
   onSuccess?: (email: string) => void;
-  onStatusChange?: (connected: boolean, email?: string) => void;
+  onStatusChange?: (connected: boolean, email?: string, statusInfo?: GoogleOAuthStatusResponse) => void;
   className?: string;
+  buttonLabel?: string;
+}
+
+export function formatProductName(prod: string): string {
+  const p = prod.toLowerCase().trim();
+  if (p.includes('sheet')) return 'Google Sheets';
+  if (p === 'drive_picker' || p === 'drive.file') return 'Google Drive (Picker)';
+  if (p.includes('drive')) return 'Google Drive';
+  if (p.includes('doc')) return 'Google Docs';
+  if (p.includes('meet')) return 'Google Meet';
+  if (p.includes('calendar')) return 'Google Calendar';
+  if (p.includes('form')) return 'Google Forms';
+  if (p.includes('gmail') || p.includes('mail')) return 'Gmail';
+  return prod.charAt(0).toUpperCase() + prod.slice(1);
+}
+
+export function isProductGranted(prod: string, granted: string[] = [], scopes: string[] = []): boolean {
+  const p = prod.toLowerCase().trim();
+  if (p === 'drive_picker' || p === 'drive.file') {
+    return granted.some((g) => g.toLowerCase() === 'drive_picker' || g.toLowerCase() === 'drive') ||
+           scopes.some((s) => s.includes('drive.file') || s.endsWith('/drive'));
+  }
+  if (p === 'gmail' || p === 'gmail.send') {
+    return granted.some((g) => g.toLowerCase().includes('gmail')) ||
+           scopes.some((s) => s.includes('gmail.send'));
+  }
+  if (p.includes('sheet')) {
+    return granted.some((g) => g.toLowerCase().includes('sheet')) ||
+           scopes.some((s) => s.includes('spreadsheets'));
+  }
+  if (p.includes('doc')) {
+    return granted.some((g) => g.toLowerCase().includes('doc')) ||
+           scopes.some((s) => s.includes('documents'));
+  }
+  if (p === 'drive' || p === 'google drive') {
+    return granted.some((g) => g.toLowerCase() === 'drive') ||
+           scopes.some((s) => s.endsWith('/drive'));
+  }
+  if (p.includes('meet')) return granted.some((g) => g.toLowerCase().includes('meet'));
+  if (p.includes('calendar')) return granted.some((g) => g.toLowerCase().includes('calendar'));
+  if (p.includes('form')) return granted.some((g) => g.toLowerCase().includes('form'));
+  return granted.some((g) => g.toLowerCase() === p);
 }
 
 export function GoogleOAuthConsentButton({
   userId,
+  scope,
+  requiredProducts = [],
   onSuccess,
   onStatusChange,
   className = '',
+  buttonLabel,
 }: GoogleOAuthConsentButtonProps) {
+  const { clientId } = useGoogleOAuth();
+  const isClientIdConfigured = Boolean(clientId && clientId !== 'google-oauth-unconfigured');
+
   const [isChecking, setIsChecking] = useState(true);
   const [isConnected, setIsConnected] = useState(false);
   const [accountEmail, setAccountEmail] = useState<string>('');
+  const [grantedScopes, setGrantedScopes] = useState<string[]>([]);
+  const [grantedProducts, setGrantedProducts] = useState<string[]>([]);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isDisconnecting, setIsDisconnecting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [isConfigured, setIsConfigured] = useState(true);
+  const [backendConfigured, setBackendConfigured] = useState(true);
 
-  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const isCheckingRef = useRef(false);
+  const prevAuthKeyRef = useRef<string>('');
 
+  const requiredProductsRef = useRef(requiredProducts);
+  requiredProductsRef.current = requiredProducts;
+
+  const onSuccessRef = useRef(onSuccess);
+  onSuccessRef.current = onSuccess;
+
+  const onStatusChangeRef = useRef(onStatusChange);
+  onStatusChangeRef.current = onStatusChange;
+
+  // Compute missing products that are required by current tool configuration
+  const missingProducts = requiredProducts.filter((req) => !isProductGranted(req, grantedProducts, grantedScopes));
+  const isFullyAuthorized = isConnected && missingProducts.length === 0;
+
+  // Check current authorization status from backend
   const checkStatus = useCallback(async () => {
-    if (!userId) return;
+    if (!userId || isCheckingRef.current) return null;
+    isCheckingRef.current = true;
+
     try {
       const res = await apiClient.getGoogleOAuthStatus(userId);
       setIsConnected(res.connected);
-      setIsConfigured(res.client_id_configured ?? true);
+      setBackendConfigured(res.client_id_configured ?? true);
+      const gProducts = res.granted_products || [];
+      const gScopes = res.granted_scopes || [];
+      setGrantedScopes(gScopes);
+      setGrantedProducts(gProducts);
+
+      const missing = requiredProductsRef.current.filter((req) => !isProductGranted(req, gProducts, gScopes));
+      const fullyAuth = res.connected && missing.length === 0;
+
+      const currentAuthKey = `${res.connected}-${res.email || ''}-${fullyAuth}-${gProducts.sort().join(',')}`;
+
       if (res.connected && res.email) {
         setAccountEmail(res.email);
-        if (onStatusChange) onStatusChange(true, res.email);
       } else {
         setAccountEmail('');
-        if (onStatusChange) onStatusChange(false, '');
       }
+
+      if (currentAuthKey !== prevAuthKeyRef.current) {
+        prevAuthKeyRef.current = currentAuthKey;
+        if (onStatusChangeRef.current) {
+          onStatusChangeRef.current(fullyAuth, res.email || '', res);
+        }
+      }
+
+      return { res, fullyAuth, missing };
     } catch (err: any) {
       console.warn('Could not verify Google OAuth status:', err);
+      return null;
     } finally {
       setIsChecking(false);
+      isCheckingRef.current = false;
     }
-  }, [userId, onStatusChange]);
+  }, [userId]);
 
+  // Handle Disconnect / Revoke
   const handleDisconnect = async () => {
     if (!userId) return;
     setIsDisconnecting(true);
@@ -63,7 +152,10 @@ export function GoogleOAuthConsentButton({
       await apiClient.revokeGoogleOAuth(userId);
       setIsConnected(false);
       setAccountEmail('');
-      if (onStatusChange) onStatusChange(false, '');
+      setGrantedScopes([]);
+      setGrantedProducts([]);
+      prevAuthKeyRef.current = 'revoked';
+      if (onStatusChangeRef.current) onStatusChangeRef.current(false, '');
     } catch (err: any) {
       console.warn('Could not disconnect Google OAuth:', err);
     } finally {
@@ -71,236 +163,200 @@ export function GoogleOAuthConsentButton({
     }
   };
 
-  useEffect(() => {
-    checkStatus();
-    return () => {
-      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
-    };
-  }, [checkStatus]);
+  // Google Identity Services (GIS) via @react-oauth/google
+  // Window open, closure detection, and code exchange handled via native event callbacks
+  const effectiveScope = scope && scope.trim() ? scope.trim() : 'https://www.googleapis.com/auth/gmail.send';
 
-  // Handle OAuth Consent Window Launch
-  const handleStartOAuth = async () => {
-    setIsConnecting(true);
-    setErrorMessage(null);
+  const googleLogin = useGoogleLogin({
+    flow: 'auth-code',
+    scope: effectiveScope,
+    onSuccess: async (codeResponse) => {
+      setIsConnecting(true);
+      setErrorMessage(null);
 
-    try {
-      const res = await apiClient.initGoogleOAuth(userId);
-
-      if (!res.auth_url) {
-        setErrorMessage(
-          res.details ||
-          res.error ||
-          'Google Developer Console credentials (GOOGLE_OAUTH_CLIENT_ID) not found in backend .env.'
-        );
-        setIsConfigured(false);
-        setIsConnecting(false);
-        return;
-      }
-
-      // Open Google OAuth consent popup
-      const width = 600;
-      const height = 720;
-      const left = window.screen.width / 2 - width / 2;
-      const top = window.screen.height / 2 - height / 2;
-
-      const popup = window.open(
-        res.auth_url,
-        'GoogleOAuthConsent',
-        `width=${width},height=${height},top=${top},left=${left},scrollbars=yes,status=no,resizable=yes`
-      );
-
-      // Helper to finalize success state
-      const handleAuthSuccess = (email: string) => {
-        cleanup();
-        setIsConnected(true);
-        setAccountEmail(email);
-        setIsConnecting(false);
-        setErrorMessage(null);
-        if (onSuccess) onSuccess(email);
-        if (onStatusChange) onStatusChange(true, email);
-      };
-
-      const handleAuthError = (msg?: string) => {
-        cleanup();
-        setErrorMessage(msg || 'Authorization was cancelled or denied.');
-        setIsConnecting(false);
-      };
-
-      // Channel 1: postMessage
-      const messageListener = (event: MessageEvent) => {
-        if (event.data && event.data.type === 'GOOGLE_OAUTH_SUCCESS') {
-          handleAuthSuccess(event.data.email || '');
-        } else if (event.data && event.data.type === 'GOOGLE_OAUTH_ERROR') {
-          handleAuthError(event.data.message);
-        }
-      };
-
-      // Channel 2: BroadcastChannel
-      let bc: BroadcastChannel | null = null;
       try {
-        bc = new BroadcastChannel('nexus_google_oauth');
-        bc.onmessage = (event) => {
-          if (event.data && event.data.type === 'GOOGLE_OAUTH_SUCCESS') {
-            handleAuthSuccess(event.data.email || '');
-          } else if (event.data && event.data.type === 'GOOGLE_OAUTH_ERROR') {
-            handleAuthError(event.data.message);
+        const exchangeRes = await apiClient.exchangeGoogleAuthCode(userId, codeResponse.code);
+        if (exchangeRes.success) {
+          setIsConnected(true);
+          const email = exchangeRes.email || '';
+          setAccountEmail(email);
+          const gProducts = exchangeRes.granted_products || [];
+          const gScopes = exchangeRes.granted_scopes || [];
+          setGrantedScopes(gScopes);
+          setGrantedProducts(gProducts);
+
+          const missing = requiredProductsRef.current.filter((req) => !isProductGranted(req, gProducts, gScopes));
+          const fullyAuth = missing.length === 0;
+
+          if (onSuccessRef.current) {
+            onSuccessRef.current(email);
           }
-        };
-      } catch (e) {}
-
-      // Channel 3: localStorage event
-      const storageListener = (e: StorageEvent) => {
-        if (e.key === 'google_oauth_completed' && e.newValue) {
-          try {
-            const data = JSON.parse(e.newValue);
-            if (data.type === 'GOOGLE_OAUTH_SUCCESS') {
-              handleAuthSuccess(data.email || '');
-            } else if (data.type === 'GOOGLE_OAUTH_ERROR') {
-              handleAuthError(data.message);
-            }
-          } catch (err) {}
-        }
-      };
-
-      const cleanup = () => {
-        window.removeEventListener('message', messageListener);
-        window.removeEventListener('storage', storageListener);
-        if (bc) {
-          try {
-            bc.close();
-          } catch (e) {}
-        }
-        if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
-      };
-
-      window.addEventListener('message', messageListener);
-      window.addEventListener('storage', storageListener);
-
-      // Fallback Polling in case popup communication is blocked
-      let pollCount = 0;
-      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
-      pollIntervalRef.current = setInterval(async () => {
-        pollCount += 1;
-        try {
-          const statusRes = await apiClient.getGoogleOAuthStatus(userId);
-          if (statusRes.connected) {
-            handleAuthSuccess(statusRes.email || '');
+          if (onStatusChangeRef.current) {
+            onStatusChangeRef.current(fullyAuth, email, exchangeRes as any);
           }
-        } catch (e) {}
-
-        if (pollCount > 60 || (popup && popup.closed)) {
-          cleanup();
-          setIsConnecting(false);
+        } else {
+          setErrorMessage(exchangeRes.error || 'Failed to complete authorization with Google.');
         }
-      }, 2000);
-
-    } catch (err: any) {
-      setErrorMessage(
-        err.message || 'Failed to start Google OAuth flow. Please ensure backend credentials are configured.'
-      );
+      } catch (err: any) {
+        console.error('Google authorization code exchange failed:', err);
+        setErrorMessage(err.message || 'Error exchanging authorization code with backend.');
+      } finally {
+        setIsConnecting(false);
+      }
+    },
+    onError: (errorResponse) => {
       setIsConnecting(false);
+      if (errorResponse.error && errorResponse.error !== 'access_denied') {
+        setErrorMessage(errorResponse.error_description || errorResponse.error);
+      }
+    },
+    onNonOAuthError: (nonOAuthError) => {
+      // Handles window closure and popup failures without any cross-origin errors
+      setIsConnecting(false);
+      if (nonOAuthError.type === 'popup_failed_to_open') {
+        setErrorMessage('Google consent popup was blocked by browser. Please allow popups and try again.');
+      } else if (nonOAuthError.type === 'popup_closed') {
+        // User closed the window before granting permissions
+        console.log('Google OAuth consent window was closed by user.');
+      }
+    },
+  });
+
+  const handleStartOAuth = () => {
+    setErrorMessage(null);
+    setIsConnecting(true);
+    try {
+      googleLogin();
+    } catch (err: any) {
+      setIsConnecting(false);
+      setErrorMessage(err.message || 'Failed to launch Google consent screen.');
     }
   };
 
+  useEffect(() => {
+    checkStatus();
+  }, [checkStatus]);
+
+  const isConfigured = isClientIdConfigured && backendConfigured;
+
   return (
-    <div className={`mt-2.5 space-y-2.5 ${className}`}>
-      {isChecking ? (
-        <div className="flex items-center gap-2 text-[11px] text-slate-400 py-1">
-          <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
-          <span>Checking Google account authorization...</span>
+    <div className={`space-y-3 ${className}`}>
+      {/* 1. Configuration Error Banner */}
+      {!isConfigured && (
+        <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/25 flex items-start gap-3">
+          <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+          <div className="text-xs space-y-1">
+            <span className="font-semibold text-amber-200 block">Google OAuth Client ID Missing</span>
+            <p className="text-amber-300/80 leading-relaxed text-[11px]">
+              Set <code className="px-1 py-0.5 rounded bg-black/40 font-mono text-amber-300">NEXT_PUBLIC_GOOGLE_CLIENT_ID</code> in{' '}
+              <code className="px-1 py-0.5 rounded bg-black/40 font-mono text-amber-300">frontend/.env.local</code> and{' '}
+              <code className="px-1 py-0.5 rounded bg-black/40 font-mono text-amber-300">GOOGLE_OAUTH_CLIENT_ID</code> in{' '}
+              <code className="px-1 py-0.5 rounded bg-black/40 font-mono text-amber-300">backend/.env</code>.
+            </p>
+          </div>
         </div>
-      ) : isConnected ? (
-        /* Connected State Card */
-        <div className="p-3.5 rounded-xl bg-emerald-950/30 border border-emerald-500/30 flex items-center justify-between gap-3">
-          <div className="flex items-start gap-2.5 min-w-0">
-            <div className="p-1.5 rounded-lg bg-emerald-500/20 text-emerald-400 shrink-0 mt-0.5">
-              <ShieldCheck className="w-4 h-4" />
-            </div>
-            <div className="min-w-0">
-              <div className="flex items-center gap-1.5">
-                <span className="text-xs font-bold text-white">
+      )}
+
+      {/* 2. Error Message */}
+      {errorMessage && (
+        <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/25 flex items-start gap-2.5 text-xs text-rose-300">
+          <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <span className="font-semibold block mb-0.5">Authentication Error</span>
+            <p className="text-[11px] text-rose-300/90">{errorMessage}</p>
+          </div>
+        </div>
+      )}
+
+      {/* 3. Loading State */}
+      {isChecking ? (
+        <div className="flex items-center gap-2 py-2.5 px-3.5 rounded-xl bg-slate-900/60 border border-slate-800 text-xs text-slate-400">
+          <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
+          <span>Verifying active Google credentials...</span>
+        </div>
+      ) : isFullyAuthorized ? (
+        /* 4. Fully Authorized State */
+        <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/25 space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+              <div className="min-w-0">
+                <span className="text-xs font-semibold text-emerald-300 block">
                   Google Account Authorized
                 </span>
-                <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                  gmail.send active
+                <span className="text-[11px] text-emerald-400/80 font-mono truncate block">
+                  {accountEmail}
                 </span>
               </div>
-              <p className="text-[11px] text-slate-300 truncate mt-0.5 font-mono">
-                {accountEmail || 'Personal Google Account'}
-              </p>
             </div>
-          </div>
 
-          <div className="flex items-center gap-1.5 shrink-0">
-            <button
-              type="button"
-              onClick={handleStartOAuth}
-              disabled={isConnecting || isDisconnecting}
-              className="text-[11px] text-slate-400 hover:text-white px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-700 hover:border-slate-600 transition-colors"
-              title="Switch Google Account"
-            >
-              {isConnecting ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Change'}
-            </button>
             <button
               type="button"
               onClick={handleDisconnect}
-              disabled={isConnecting || isDisconnecting}
-              className="text-[11px] text-rose-400 hover:text-rose-300 px-2.5 py-1 rounded-lg bg-rose-500/10 border border-rose-500/25 hover:border-rose-500/40 transition-colors"
-              title="Disconnect Google Account"
+              disabled={isDisconnecting}
+              className="text-[10px] text-slate-400 hover:text-rose-400 px-2 py-1 rounded-lg border border-slate-700/60 hover:border-rose-500/30 hover:bg-rose-500/10 transition-colors shrink-0 disabled:opacity-50"
             >
-              {isDisconnecting ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Disconnect'}
+              {isDisconnecting ? 'Revoking...' : 'Disconnect'}
             </button>
+          </div>
+
+          <div className="flex items-center gap-1.5 flex-wrap pt-1 border-t border-emerald-500/15">
+            <span className="text-[10px] text-emerald-400/90 font-medium">Active permissions:</span>
+            {grantedProducts.map((p) => (
+              <span
+                key={p}
+                className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+              >
+                {formatProductName(p)}
+              </span>
+            ))}
           </div>
         </div>
       ) : (
-        /* Unconnected / Consent Required Card */
-        <div className="p-3.5 rounded-xl bg-slate-900/90 border border-indigo-500/30 space-y-2.5">
-          <div className="flex items-start gap-2.5">
-            <div className="p-1.5 rounded-lg bg-indigo-500/20 text-indigo-400 shrink-0 mt-0.5">
-              <KeyRound className="w-4 h-4" />
+        /* 5. Missing Permissions or Disconnected State */
+        <div className="space-y-2.5">
+          {isConnected && missingProducts.length > 0 && (
+            <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/25 flex items-start gap-2.5 text-xs text-amber-300">
+              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <span className="font-semibold block mb-0.5">Additional Permission Scope Required</span>
+                <p className="text-[11px] text-amber-300/80 mb-1.5">
+                  Your connected Google account ({accountEmail}) lacks access to:{' '}
+                  <strong>{missingProducts.map(formatProductName).join(', ')}</strong>.
+                </p>
+                <div className="flex items-center gap-1 flex-wrap">
+                  {missingProducts.map((p) => (
+                    <span
+                      key={p}
+                      className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                    >
+                      +{formatProductName(p)}
+                    </span>
+                  ))}
+                </div>
+              </div>
             </div>
-            <div>
-              <span className="text-xs font-bold text-white block">
-                Google OAuth Consent Required
-              </span>
-              <p className="text-[11px] text-slate-400 leading-snug mt-0.5">
-                Authorize your personal Gmail account to dispatch automated emails for this tool instance.
-              </p>
-            </div>
-          </div>
+          )}
 
           <button
             type="button"
             onClick={handleStartOAuth}
-            disabled={isConnecting}
-            className="w-full inline-flex items-center justify-center gap-2 py-2 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold shadow-md shadow-indigo-600/20 transition-all active:scale-[0.98]"
+            disabled={isConnecting || !isConfigured}
+            className="w-full inline-flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-semibold shadow-md shadow-indigo-600/20 transition-all active:scale-[0.99]"
           >
             {isConnecting ? (
               <>
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                <span>Waiting for Consent...</span>
+                <span>Waiting for Google Consent Window...</span>
               </>
             ) : (
               <>
-                <ExternalLink className="w-3.5 h-3.5" />
-                <span>Connect Personal Google Account</span>
+                <KeyRound className="w-3.5 h-3.5" />
+                <span>{buttonLabel || (isConnected ? 'Grant Additional Permissions' : 'Authorize with Google')}</span>
+                <ExternalLink className="w-3 h-3 ml-0.5 opacity-70" />
               </>
             )}
           </button>
-
-          {errorMessage && (
-            <div className="p-2.5 rounded-lg bg-rose-500/10 border border-rose-500/25 text-rose-300 text-[11px] flex items-start gap-2">
-              <AlertTriangle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
-              <div className="space-y-1">
-                <span className="font-semibold block">{errorMessage}</span>
-                {!isConfigured && (
-                  <p className="text-[10px] text-rose-200/80 leading-relaxed">
-                    Add <code className="bg-slate-950 px-1 py-0.5 rounded text-amber-300 font-mono">GOOGLE_OAUTH_CLIENT_ID</code> and <code className="bg-slate-950 px-1 py-0.5 rounded text-amber-300 font-mono">GOOGLE_OAUTH_CLIENT_SECRET</code> to your <code className="font-mono text-white">backend/.env</code> file.
-                  </p>
-                )}
-              </div>
-            </div>
-          )}
         </div>
       )}
     </div>

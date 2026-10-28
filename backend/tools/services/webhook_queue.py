@@ -1,7 +1,7 @@
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
-from django.db import connection
+from django.db import connection, connections
 
 from tools.models import WebhookEventJob
 from tools.services.graph_engine import GraphEngine
@@ -22,7 +22,7 @@ class WebhookQueue:
     @classmethod
     def get_executor(cls) -> ThreadPoolExecutor:
         if cls._executor is None:
-            cls._executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix="webhook_worker")
+            cls._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="webhook_worker")
         return cls._executor
 
     @classmethod
@@ -36,7 +36,11 @@ class WebhookQueue:
     @classmethod
     def _run_job_safe(cls, job_id: int) -> None:
         # Ensure a clean thread-local DB connection for this background worker
-        connection.close()
+        try:
+            connection.close()
+            connections.close_all()
+        except Exception:
+            pass
 
         try:
             job = WebhookEventJob.objects.select_related('tool', 'deployment').filter(id=job_id).first()
@@ -165,4 +169,8 @@ class WebhookQueue:
             except Exception:
                 pass
         finally:
-            connection.close()
+            try:
+                connection.close()
+                connections.close_all()
+            except Exception:
+                pass

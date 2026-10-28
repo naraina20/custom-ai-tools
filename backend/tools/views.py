@@ -1,5 +1,6 @@
 import logging
 from django.conf import settings
+from django.utils import timezone
 from rest_framework import status, serializers
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -76,11 +77,11 @@ Your goal is to parse a natural language tool description into a clean, minimal,
 
 4. NORMAL TOOL SPECIFICATION (when fallback_triggered is false):
    - "title": Concise, professional name for the tool.
-   - "description": Clear explanation of what the tool accomplishes.
+   - "description": The tool description MUST PRESERVE the user's exact original prompt verbatim. NEVER overwrite or replace the description with bulleted task points or task lists.
    - "requires_oauth": true if any Google product or third-party OAuth is required, else false.
    - "oauth_provider": "google" if any Google product or Gmail is used; "github" for GitHub; otherwise "none".
    - "requires_hitl": Keep FALSE by default. Set to TRUE ONLY if human approval / manual review was explicitly requested.
-   - "form_schema": Define ONLY up to MAX 3 input properties for the UI unless user requested more. Supported field types: "string", "number", "boolean".
+   - "form_schema": Define ONLY up to MAX 3 input properties for user configuration. Supported field types: "string", "number", "boolean". If the tool is driven by an inbound webhook (receives external payload directly at its webhook URL), NEVER create dummy manual input fields like "payload", "webhook_data", or "webhook_response". If no user parameters are required, return {{"type": "object", "properties": {{}}, "required": []}}.
 
 === EXACT OUTPUT FORMAT (JSON ONLY) ===
 Return ONLY a valid, compact JSON object matching one of the following schemas:
@@ -197,10 +198,44 @@ class ImproveDescriptionView(APIView):
             )
 
 
+class ExtractToolTasksView(APIView):
+    """
+    POST /api/tools/extract-tasks/
+    Accepts: { "description": "...", "feedback": "...", "current_tasks": [...] }
+    Extracts atomic, verified step-by-step tasks strictly conforming to ADMIN_PLATFORM_RULES.
+    Supports interactive Human-In-The-Loop review and feedback refinement before saving.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        from tools.services.task_extractor import TaskExtractorService
+
+        description = request.data.get('description', '').strip()
+        if not description:
+            return Response({"error": "Description is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        feedback = request.data.get('feedback')
+        current_tasks = request.data.get('current_tasks')
+
+        try:
+            result = TaskExtractorService.extract_tasks(
+                description=description,
+                feedback=feedback,
+                current_tasks=current_tasks,
+            )
+            return Response(result, status=status.HTTP_200_OK)
+        except Exception as exc:
+            logger.error("Task extraction failed via LLM: %s", exc, exc_info=True)
+            return Response(
+                {"error": f"AI task extraction failed: {str(exc)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
 class GenerateSchemaView(APIView):
     """
     POST /api/tools/generate-schema/
-    Accepts: { "description": "..." }
+    Accepts: { "description": "...", "tasks": "..." }
     Injects Google capability matrix into LLM prompt context.
     Evaluates capabilities: triggers Fallback Interface with 3 alternatives if unsupported (e.g. Gmail inbox reading),
     or intelligently determines add_gmail_oauth_flag and Google product auth channels.
@@ -211,14 +246,19 @@ class GenerateSchemaView(APIView):
         serializer = GenerateSchemaRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         description = serializer.validated_data['description']
+        tasks_context = request.data.get('tasks', '')
 
         provider, user_api_key = LLMRouter.extract_auth_from_request(request)
         target_provider = provider or 'groq'
 
+        user_content = f"Generate tool configuration and validate Google capabilities for:\n\nDescription:\n{description}"
+        if tasks_context:
+            user_content += f"\n\nConfirmed Step-by-Step Execution Tasks:\n{tasks_context}"
+
         system_prompt = build_schema_generator_system_prompt()
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Generate tool configuration and validate Google capabilities for:\n\n{description}"}
+            {"role": "user", "content": user_content}
         ]
 
         try:
@@ -260,6 +300,11 @@ class GenerateSchemaView(APIView):
                 if k not in generated_data:
                     generated_data[k] = v
 
+            # Always preserve the user's exact original concept prompt as the tool's description
+            generated_data["description"] = description.strip()
+            if tasks_context:
+                generated_data["tasks"] = tasks_context.strip()
+
             return Response(generated_data, status=status.HTTP_200_OK)
         except Exception as exc:
             app_logger.error("Schema generation failed: %s", str(exc), exc_info=True)
@@ -299,7 +344,10 @@ class SharedUserAssetView(APIView):
         if not user_id:
             return Response({"error": "User ID required."}, status=status.HTTP_400_BAD_REQUEST)
 
+        deployment_id = request.query_params.get('deployment_id')
         assets = SharedUserAsset.objects.filter(user_id=user_id)
+        if deployment_id:
+            assets = assets.filter(deployment_id=deployment_id)
         serializer = SharedUserAssetSerializer(assets, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -313,19 +361,53 @@ class SharedUserAssetView(APIView):
             return Response({"error": "google_file_or_folder_id is required."}, status=status.HTTP_400_BAD_REQUEST)
 
         asset_name = request.data.get('asset_name', '').strip()
-        product_name = request.data.get('product_name', 'drive')
-        delegation_type = request.data.get('delegation_type', 'manual_service_account')
+        mime_type = request.data.get('mime_type', '').strip()
+        product_name = request.data.get('product_name')
+        if not product_name:
+            if 'spreadsheet' in mime_type:
+                product_name = 'sheets'
+            elif 'document' in mime_type:
+                product_name = 'docs'
+            else:
+                product_name = 'drive'
 
-        # Create or update SharedUserAsset mapping
+        delegation_type = request.data.get('delegation_type', 'manual_service_account')
+        metadata = request.data.get('metadata') or {}
+        deployment_id = request.data.get('deployment_id')
+
+        defaults = {
+            'asset_name': asset_name or f"Shared Asset ({file_id[:8]}...)",
+            'mime_type': mime_type,
+            'product_name': product_name,
+            'delegation_type': delegation_type,
+            'service_account_email': PLATFORM_SERVICE_ACCOUNT_EMAIL,
+            'metadata': metadata,
+        }
+        if deployment_id:
+            defaults['deployment_id'] = deployment_id
+
+        # Handle Granular Google Picker selection
+        if delegation_type == 'granular_picker':
+            defaults['is_verified'] = True
+            defaults['verified_at'] = timezone.now()
+            asset, created = SharedUserAsset.objects.update_or_create(
+                user_id=user_id,
+                google_file_or_folder_id=file_id,
+                defaults=defaults
+            )
+            return Response({
+                "asset": SharedUserAssetSerializer(asset).data,
+                "is_verified": True,
+                "verification_error": None,
+                "service_account_email": PLATFORM_SERVICE_ACCOUNT_EMAIL,
+                "message": f"Asset '{asset.asset_name}' successfully chosen via Google Picker and linked to your profile."
+            }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+        # Create or update SharedUserAsset mapping for manual service account delegation
         asset, created = SharedUserAsset.objects.update_or_create(
             user_id=user_id,
             google_file_or_folder_id=file_id,
-            defaults={
-                'asset_name': asset_name or f"Shared Asset ({file_id[:8]}...)",
-                'product_name': product_name,
-                'delegation_type': delegation_type,
-                'service_account_email': PLATFORM_SERVICE_ACCOUNT_EMAIL,
-            }
+            defaults=defaults
         )
 
         # Programmatically cross-verify access token / Drive API via Service Account
@@ -342,6 +424,7 @@ class SharedUserAssetView(APIView):
             "service_account_email": PLATFORM_SERVICE_ACCOUNT_EMAIL,
             "message": "Asset verified successfully." if is_verified else f"Asset created but verification failed: {error_msg}"
         }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
 
 
 class CreateToolView(APIView):
@@ -363,6 +446,15 @@ class CreateToolView(APIView):
             data['is_public'] = True
         elif isinstance(data['is_public'], str):
             data['is_public'] = data['is_public'].lower() in ['true', '1', 'yes']
+
+        original_prompt = data.get('original_prompt') or data.get('description')
+        if original_prompt:
+            data['description'] = str(original_prompt).strip()
+
+        if isinstance(data.get('tasks'), list):
+            data['tasks'] = "\n".join(f"- {t}" for t in data['tasks'] if str(t).strip())
+        elif data.get('tasks') is None:
+            data['tasks'] = ""
 
         serializer = CustomToolSerializer(data=data, context={'request': request})
         serializer.is_valid(raise_exception=True)

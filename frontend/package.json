@@ -11,6 +11,9 @@
   },
   "dependencies": {
     "@clerk/nextjs": "^7.9.18",
+    "@googleworkspace/drive-picker-element": "^0.7.3",
+    "@googleworkspace/drive-picker-react": "^0.2.0",
+    "@react-oauth/google": "^0.13.5",
     "@tailwindcss/postcss": "^4.3.3",
     "@tsparticles/react": "^4.4.0",
     "@tsparticles/slim": "^4.4.0",

@@ -38,19 +38,14 @@ class AppLogger:
         if not cls._is_debug():
             return
 
-        ts = cls._timestamp()
-        header = f"[{ts}] [STEP] [{step_name}] {message}"
-        print(header, flush=True)
-
+        detail_suffix = ""
         if details:
             try:
-                formatted_details = json.dumps(details, default=str, indent=2)
-                for line in formatted_details.splitlines():
-                    print(f"       {line}", flush=True)
+                detail_suffix = f"\n{json.dumps(details, default=str, indent=2)}"
             except Exception:
-                print(f"       Details: {details}", flush=True)
+                detail_suffix = f" | Details: {details}"
 
-        standard_logger.debug("[%s] %s | %s", step_name, message, details or {})
+        standard_logger.info("[STEP] [%s] %s%s", step_name, message, detail_suffix)
 
     @classmethod
     def debug(cls, component: str, message: str, details: Optional[Dict[str, Any]] = None) -> None:
@@ -60,15 +55,14 @@ class AppLogger:
         if not cls._is_debug():
             return
 
-        ts = cls._timestamp()
-        out = f"[{ts}] [DEBUG] [{component}] {message}"
+        detail_suffix = ""
         if details:
             try:
-                out += f" -> {json.dumps(details, default=str)}"
+                detail_suffix = f" -> {json.dumps(details, default=str)}"
             except Exception:
-                out += f" -> {details}"
-        print(out, flush=True)
-        standard_logger.debug("[%s] %s", component, message)
+                detail_suffix = f" -> {details}"
+
+        standard_logger.debug("[%s] %s%s", component, message, detail_suffix)
 
     @classmethod
     def info(cls, component: str, message: str) -> None:
@@ -78,8 +72,6 @@ class AppLogger:
         if not cls._is_debug():
             return
 
-        ts = cls._timestamp()
-        print(f"[{ts}] [INFO]  [{component}] {message}", flush=True)
         standard_logger.info("[%s] %s", component, message)
 
     @classmethod
@@ -87,16 +79,7 @@ class AppLogger:
         """
         Logs application errors. ALWAYS executed regardless of DEBUG flag.
         """
-        ts = cls._timestamp()
-        err_msg = f"[{ts}] [ERROR] [{component}] {message}"
-        if exc:
-            err_msg += f" | Exception: {exc}"
-
-        print(err_msg, file=sys.stderr, flush=True)
-        standard_logger.error("[%s] %s", component, message, exc_info=exc)
-
-        if exc and cls._is_debug():
-            traceback.print_exc()
+        standard_logger.error("[%s] %s", component, message, exc_info=exc if cls._is_debug() else False)
 
     @classmethod
     def log_critical(

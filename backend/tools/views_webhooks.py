@@ -66,6 +66,20 @@ class UserToolDeployView(APIView):
             config_data=config_data,
         )
 
+        # Connect any associated Google asset to this deployed instance
+        from tools.models import SharedUserAsset
+        target_file_id = (
+            config_data.get("google_file_id")
+            or config_data.get("spreadsheet_id")
+            or config_data.get("google_sheet_id")
+            or config_data.get("file_id")
+        )
+        if target_file_id:
+            SharedUserAsset.objects.filter(
+                user_id=user_id,
+                google_file_or_folder_id=str(target_file_id)
+            ).update(deployment=deployment)
+
         AppLogger.step(
             "UserToolDeployView",
             f"Personal tool instance deployed for user '{user_id}' on tool '{tool.title}' (ID: {tool_id})",

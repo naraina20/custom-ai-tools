@@ -84,10 +84,22 @@ export function ToolCard({ tool, userDeployments = [], onRun, onDeploy }: ToolCa
           </div>
         </div>
 
-        {/* Description */}
-        <p className="text-xs text-slate-400 line-clamp-3 leading-relaxed mb-4">
+        {/* Description (Original User Prompt) */}
+        <p className="text-xs text-slate-300 line-clamp-2 leading-relaxed mb-2.5" title={tool.description}>
           {tool.description || 'No description provided for this AI tool.'}
         </p>
+
+        {/* Task points shown as text in one paragraph when available */}
+        {tool.tasks && (
+          <div className="mb-3.5 p-2 rounded-lg bg-slate-950/40 border border-slate-800/60">
+            <span className="text-[10px] font-mono text-indigo-400 uppercase tracking-wider block mb-0.5">
+              Execution Tasks
+            </span>
+            <p className="text-[11px] text-slate-400 line-clamp-2 leading-relaxed">
+              {tool.tasks.split('\n').map((t: string) => t.replace(/^-\s*/, '').trim()).filter(Boolean).join(' • ')}
+            </p>
+          </div>
+        )}
 
         {/* Capability Tags */}
         <div className="flex flex-wrap gap-1.5 mb-5">

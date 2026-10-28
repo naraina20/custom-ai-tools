@@ -19,6 +19,8 @@ class NotificationConsumer(AsyncWebsocketConsumer):
 
         # Join personal user notification group
         await self.channel_layer.group_add(self.group_name, self.channel_name)
+        if self.user_id.startswith("user_"):
+            await self.channel_layer.group_add(self.user_id, self.channel_name)
         await self.accept()
 
         logger.info("WebSocket connected for user: %s (channel: %s)", self.user_id, self.channel_name)
@@ -34,6 +36,8 @@ class NotificationConsumer(AsyncWebsocketConsumer):
     async def disconnect(self, close_code):
         if hasattr(self, 'group_name'):
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
+        if hasattr(self, 'user_id') and self.user_id.startswith("user_"):
+            await self.channel_layer.group_discard(self.user_id, self.channel_name)
         logger.info("WebSocket disconnected for user: %s (code: %s)", getattr(self, 'user_id', 'unknown'), close_code)
 
     async def receive(self, text_data=None, bytes_data=None):
@@ -47,6 +51,36 @@ class NotificationConsumer(AsyncWebsocketConsumer):
         except Exception as exc:
             logger.warning("Error processing inbound WebSocket message: %s", str(exc))
 
+    async def dispatch(self, message):
+        """
+        Safely dispatches channel layer messages.
+        If a specific handler (e.g. webhook_notification, step_notification) exists, it is called.
+        Otherwise, if the message has a 'payload' or data, it safely serializes and sends it to the client,
+        preventing ValueError: No handler for message type from crashing the WebSocket.
+        """
+        handler_name = message["type"].replace(".", "_")
+        handler = getattr(self, handler_name, None)
+        if handler:
+            await handler(message)
+        else:
+            payload = message.get("payload") if "payload" in message else message
+            try:
+                if isinstance(payload, dict):
+                    await self.send(text_data=json.dumps(payload))
+                elif isinstance(payload, str):
+                    await self.send(text_data=payload)
+                else:
+                    await self.send(text_data=json.dumps({"type": "NOTIFICATION", "data": str(payload)}))
+            except Exception as exc:
+                logger.warning("NotificationConsumer fallback dispatch failed for type %s: %s", message.get("type"), exc)
+
+    async def webhook_notification(self, event):
+        """
+        Handler for WEBHOOK_EXECUTION_COMPLETED / WEBHOOK_EXECUTION_FAILED broadcasts.
+        """
+        payload = event.get('payload', {})
+        await self.send(text_data=json.dumps(payload))
+
     async def hitl_notification(self, event):
         """
         Handler for HITL_REQUEST broadcasts.
@@ -56,7 +90,7 @@ class NotificationConsumer(AsyncWebsocketConsumer):
 
     async def step_notification(self, event):
         """
-        Handler for real-time STEP_PROGRESS broadcasts.
+        Handler for real-time STEP_PROGRESS broadcasts (both in-app execution and webhook).
         """
         payload = event.get('payload', {})
         await self.send(text_data=json.dumps(payload))

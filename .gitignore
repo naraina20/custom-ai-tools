@@ -98,6 +98,7 @@ frontend/dist-ssr/
 .DS_Store
 Thumbs.db
 ehthumbs.db
+/.agents
 
 # Logs
 logs

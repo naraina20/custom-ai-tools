@@ -4,8 +4,9 @@ import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useUser } from '@clerk/nextjs';
 import { apiClient } from '@/lib/api-client';
-import { CustomTool, FormSchema, FormSchemaProperty, UserToolDeployment } from '@/lib/types';
+import { CustomTool, FormSchema, FormSchemaProperty, UserToolDeployment, GooglePickerDoc } from '@/lib/types';
 import { GoogleOAuthConsentButton } from './GoogleOAuthConsentButton';
+import { GoogleDrivePicker } from './GoogleDrivePicker';
 import { COMPANY_NAME } from '@/config/site';
 import {
   X,
@@ -34,6 +35,9 @@ import {
   ChevronUp,
   RefreshCw,
   Globe,
+  ListTodo,
+  MessageSquare,
+  RotateCcw,
 } from 'lucide-react';
 
 interface CreateToolModalProps {
@@ -54,8 +58,33 @@ interface EditableField {
 const SAMPLE_PROMPTS = [
   'A tool that reads rows from a Google Sheet, summarizes quarterly sales, and prepares an outbound summary report.',
   'An invoice parsing agent that extracts line items, validates tax calculations against GST slabs, and generates a structured reconciliation report.',
-  'A tool that checks newly uploaded documents in a Google Drive folder and sends an alert email to the shipping team about the inventory update.',
 ];
+
+function formatProductName(prod: string): string {
+  const p = prod.toLowerCase().trim();
+  if (p.includes('sheet')) return 'Google Sheets';
+  if (p === 'drive_picker') return 'Google Drive (Picker)';
+  if (p.includes('drive')) return 'Google Drive';
+  if (p.includes('doc')) return 'Google Docs';
+  if (p.includes('meet')) return 'Google Meet';
+  if (p.includes('calendar')) return 'Google Calendar';
+  if (p.includes('form')) return 'Google Forms';
+  if (p.includes('gmail') || p.includes('mail')) return 'Gmail';
+  return prod.charAt(0).toUpperCase() + prod.slice(1);
+}
+
+function normalizeGoogleProduct(raw: string): string | null {
+  const s = raw.toLowerCase().trim();
+  if (!s) return null;
+  if (s.includes('sheet')) return 'sheets';
+  if (s.includes('doc')) return 'docs';
+  if (s.includes('drive')) return 'drive';
+  if (s.includes('gmail') || s.includes('mail')) return 'gmail';
+  if (s.includes('meet')) return 'meet';
+  if (s.includes('calendar')) return 'calendar';
+  if (s.includes('form')) return 'forms';
+  return s;
+}
 
 export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalProps) {
   const { user } = useUser();
@@ -69,6 +98,16 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
   const [isImproving, setIsImproving] = useState(false);
   const [isGeneratingSchema, setIsGeneratingSchema] = useState(false);
   const [step1Error, setStep1Error] = useState<string | null>(null);
+
+  // Step 1 HITL Task Extraction & Review State
+  const [isExtractingTasks, setIsExtractingTasks] = useState(false);
+  const [isReviewingTasks, setIsReviewingTasks] = useState(false);
+  const [extractedTasks, setExtractedTasks] = useState<string[]>([]);
+  const [extractedTasksText, setExtractedTasksText] = useState('');
+  const [taskNotes, setTaskNotes] = useState('');
+  const [taskFeedback, setTaskFeedback] = useState('');
+  const [isRefiningTasks, setIsRefiningTasks] = useState(false);
+  const [toolTasks, setToolTasks] = useState('');
 
   // Specification 3: Fallback Interface State
   const [isFallbackActive, setIsFallbackActive] = useState(false);
@@ -125,6 +164,9 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
   const [deployAppPassword, setDeployAppPassword] = useState('');
   const [isStep3OAuthGranted, setIsStep3OAuthGranted] = useState(false);
   const [step3OAuthEmail, setStep3OAuthEmail] = useState('');
+  const [fileAccessChoice, setFileAccessChoice] = useState<'oauth_full' | 'granular_picker' | 'share_email'>('share_email');
+  const [pickedGoogleFile, setPickedGoogleFile] = useState<GooglePickerDoc | null>(null);
+  const [emailCopied, setEmailCopied] = useState(false);
   const [isManualDeploying, setIsManualDeploying] = useState(false);
   const [webhookUrl, setWebhookUrl] = useState<string | null>(null);
   const [webhookSecret, setWebhookSecret] = useState<string | null>(null);
@@ -153,8 +195,75 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
     }
   };
 
-  // Step 1 -> Step 2: Call backend schema generator with capability injection
-  const handleProceedToStep2 = async () => {
+  // Step 1: Extract tasks from user description via TaskExtractorService
+  const handleExtractTasks = async () => {
+    if (!description.trim() || description.trim().length < 15) {
+      setStep1Error('Please enter a descriptive tool concept (at least 15 characters).');
+      return;
+    }
+    setStep1Error(null);
+    setIsExtractingTasks(true);
+
+    try {
+      const res = await apiClient.extractTasks({
+        description: description.trim(),
+      });
+      setExtractedTasks(res.tasks || []);
+      setExtractedTasksText(res.tasks_text || '');
+      setTaskNotes(res.notes || '');
+      if (res.title && !toolTitle) {
+        setToolTitle(res.title);
+      }
+      setIsReviewingTasks(true);
+    } catch (err: any) {
+      setStep1Error(err.message || 'Failed to extract tasks. Please verify backend connection.');
+    } finally {
+      setIsExtractingTasks(false);
+    }
+  };
+
+  // Step 1 HITL: Refine extracted tasks using user feedback
+  const handleRefineTasksWithFeedback = async () => {
+    if (!taskFeedback.trim()) return;
+    setStep1Error(null);
+    setIsRefiningTasks(true);
+
+    try {
+      const res = await apiClient.extractTasks({
+        description: description.trim(),
+        feedback: taskFeedback.trim(),
+        current_tasks: extractedTasks,
+      });
+      setExtractedTasks(res.tasks || []);
+      setExtractedTasksText(res.tasks_text || '');
+      setTaskNotes(res.notes || '');
+      setTaskFeedback('');
+    } catch (err: any) {
+      setStep1Error(err.message || 'Failed to refine tasks with feedback.');
+    } finally {
+      setIsRefiningTasks(false);
+    }
+  };
+
+  // Step 1 HITL: Reject / start over
+  const handleRejectTasks = () => {
+    setIsReviewingTasks(false);
+    setExtractedTasks([]);
+    setExtractedTasksText('');
+    setTaskFeedback('');
+    setTaskNotes('');
+    setStep1Error(null);
+  };
+
+  // Step 1 HITL: Confirm tasks & proceed to Step 2
+  const handleConfirmTasksAndProceed = (tasksToUse?: string) => {
+    const finalTasks = tasksToUse || extractedTasksText;
+    setToolTasks(finalTasks);
+    handleProceedToStep2(finalTasks);
+  };
+
+  // Step 1 -> Step 2: Call backend schema generator with capability & tasks injection
+  const handleProceedToStep2 = async (tasksOverride?: string) => {
     if (!description.trim() || description.trim().length < 15) {
       setStep1Error('Please enter a descriptive tool concept (at least 15 characters).');
       return;
@@ -162,8 +271,10 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
     setStep1Error(null);
     setIsGeneratingSchema(true);
 
+    const tasksToUse = tasksOverride || toolTasks || extractedTasksText;
+
     try {
-      const generated = await apiClient.generateSchema(description);
+      const generated = await apiClient.generateSchema(description, tasksToUse);
 
       // Check if Fallback Interface was triggered due to unsupported capabilities
       if (generated.fallback_triggered) {
@@ -185,7 +296,11 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
       setIsFallbackActive(false);
       setFallbackData(null);
       setToolTitle(generated.title || 'Untitled AI Tool');
-      setToolDescription(generated.description || description);
+      // Save the user's original concept prompt as tool description
+      setToolDescription(description.trim());
+      if (tasksToUse) {
+        setToolTasks(tasksToUse);
+      }
       setRequiresOAuth(!!generated.requires_oauth);
       setOauthProvider(generated.oauth_provider || (generated.google_products_detected?.length ? 'google' : 'none'));
       setRequiresHitl(!!generated.requires_hitl);
@@ -289,6 +404,14 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
   const handleResetAndClose = () => {
     setStep(1);
     setDescription('');
+    setIsReviewingTasks(false);
+    setIsExtractingTasks(false);
+    setExtractedTasks([]);
+    setExtractedTasksText('');
+    setTaskNotes('');
+    setTaskFeedback('');
+    setIsRefiningTasks(false);
+    setToolTasks('');
     setIsFallbackActive(false);
     setFallbackData(null);
     setCustomAlternativeInput('');
@@ -308,6 +431,7 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
     setStep2Error(null);
     setStep3Error(null);
     setManualFileId('');
+    setPickedGoogleFile(null);
     setAssetVerificationResult(null);
     onClose();
   };
@@ -426,9 +550,14 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
         ? gmailAuthChoice
         : (googleProductsDetected.length > 0 ? driveAuthChoice : 'none');
 
+      const normalizedGoogleProducts = Array.from(new Set(
+        googleProductsDetected.map(normalizeGoogleProduct).filter(Boolean) as string[]
+      ));
+
       const tool = await apiClient.createTool({
         title: toolTitle.trim(),
         description: toolDescription.trim(),
+        tasks: (toolTasks || extractedTasksText).trim(),
         form_schema: formSchema,
         requires_oauth: requiresOAuth || (googleProductsDetected.length > 0 && driveAuthChoice === 'oauth_full') || (addGmailOauthFlag && gmailAuthChoice === 'oauth_send'),
         oauth_provider: requiresOAuth ? oauthProvider : (googleProductsDetected.length > 0 || addGmailOauthFlag ? 'google' : 'none'),
@@ -436,7 +565,7 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
         is_public: isPublic,
         author_id: currentUserId,
         add_gmail_oauth_flag: addGmailOauthFlag,
-        google_products: googleProductsDetected,
+        google_products: normalizedGoogleProducts,
         google_auth_mode: effectiveAuthMode,
       });
 
@@ -462,6 +591,93 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
     }
   };
 
+  // Step 3 Product Detection & Dynamic OAuth Scope Calculation
+  const step3Detected: string[] = (createdTool?.google_products && createdTool.google_products.length > 0)
+    ? createdTool.google_products
+    : (createdTool?.google_products_detected && createdTool.google_products_detected.length > 0)
+      ? createdTool.google_products_detected
+      : (googleProductsDetected || []);
+
+  const titleDescScan = `${createdTool?.title || ''} ${createdTool?.description || ''} ${createdTool?.specification_summary || ''}`.toLowerCase();
+  const step3FinalProductsSet = new Set<string>();
+  step3Detected.forEach((p: string) => {
+    const norm = normalizeGoogleProduct(p);
+    if (norm) step3FinalProductsSet.add(norm);
+  });
+
+  if (titleDescScan.includes('sheet')) step3FinalProductsSet.add('sheets');
+  if (titleDescScan.includes('drive')) step3FinalProductsSet.add('drive');
+  if (titleDescScan.includes('doc')) step3FinalProductsSet.add('docs');
+  if (titleDescScan.includes('meet')) step3FinalProductsSet.add('meet');
+  if (titleDescScan.includes('calendar')) step3FinalProductsSet.add('calendar');
+  if (titleDescScan.includes('forms') || titleDescScan.includes('form')) step3FinalProductsSet.add('forms');
+  if (titleDescScan.includes('gmail') || titleDescScan.includes('email') || titleDescScan.includes('mail')) step3FinalProductsSet.add('gmail');
+
+  const step3FinalProducts = Array.from(step3FinalProductsSet);
+
+  // File products (sheets, drive, docs) - strictly normalized to avoid duplicate badges
+  const fileProducts = step3FinalProducts.filter((p) => ['sheets', 'drive', 'docs'].includes(p));
+  const hasFileProducts = fileProducts.length > 0;
+
+  // Gmail
+  const hasGmail = step3FinalProducts.includes('gmail') || titleDescScan.includes('email') || titleDescScan.includes('mail');
+
+  // Other products (meet, calendar, forms)
+  const otherProducts = step3FinalProducts.filter((p) => !['sheets', 'drive', 'docs', 'gmail'].includes(p));
+
+  // Dynamic Scope Construction
+  const scopeParts = ['https://www.googleapis.com/auth/userinfo.email', 'openid'];
+  const requiredOAuthProducts: string[] = [];
+
+  // 1. Gmail OAuth
+  const emailNeedsOAuth = hasGmail && deployEmailChannel === 'oauth';
+  if (emailNeedsOAuth) {
+    scopeParts.push('https://www.googleapis.com/auth/gmail.send');
+    requiredOAuthProducts.push('gmail');
+  }
+
+  // 2. File products OAuth
+  const fileNeedsOAuth = hasFileProducts && (fileAccessChoice === 'oauth_full' || fileAccessChoice === 'granular_picker');
+  if (fileNeedsOAuth) {
+    if (fileAccessChoice === 'oauth_full') {
+      if (fileProducts.includes('sheets')) {
+        scopeParts.push('https://www.googleapis.com/auth/spreadsheets');
+        if (!requiredOAuthProducts.includes('sheets')) requiredOAuthProducts.push('sheets');
+      }
+      if (fileProducts.includes('drive')) {
+        scopeParts.push('https://www.googleapis.com/auth/drive');
+        if (!requiredOAuthProducts.includes('drive')) requiredOAuthProducts.push('drive');
+      }
+      if (fileProducts.includes('docs')) {
+        scopeParts.push('https://www.googleapis.com/auth/documents');
+        if (!requiredOAuthProducts.includes('docs')) requiredOAuthProducts.push('docs');
+      }
+    } else if (fileAccessChoice === 'granular_picker') {
+      scopeParts.push('https://www.googleapis.com/auth/drive.file');
+      requiredOAuthProducts.push('drive_picker');
+    }
+  }
+
+  // 3. Other products (e.g. meet, calendar, forms)
+  const otherNeedsOAuth = otherProducts.length > 0;
+  otherProducts.forEach((p) => {
+    if (p === 'meet') {
+      scopeParts.push('https://www.googleapis.com/auth/meetings.space.created');
+      if (!requiredOAuthProducts.includes('meet')) requiredOAuthProducts.push('meet');
+    }
+    if (p === 'calendar') {
+      scopeParts.push('https://www.googleapis.com/auth/calendar.events');
+      if (!requiredOAuthProducts.includes('calendar')) requiredOAuthProducts.push('calendar');
+    }
+    if (p === 'forms') {
+      scopeParts.push('https://www.googleapis.com/auth/forms.body');
+      if (!requiredOAuthProducts.includes('forms')) requiredOAuthProducts.push('forms');
+    }
+  });
+
+  const computedScope = Array.from(new Set(scopeParts)).join(' ');
+  const needsOAuth = emailNeedsOAuth || fileNeedsOAuth || otherNeedsOAuth;
+
   // Step 3 Manual Deployment execution
   const handleManualDeploy = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -471,10 +687,6 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
     setStep3Error(null);
 
     try {
-      const effectiveAuthMode = addGmailOauthFlag
-        ? gmailAuthChoice
-        : (googleProductsDetected.length > 0 ? driveAuthChoice : 'none');
-
       const effectiveEmail = deployEmailChannel === 'app_password'
         ? deployAppEmail.trim()
         : (deployEmailChannel === 'oauth' ? (step3OAuthEmail || user?.primaryEmailAddress?.emailAddress || '') : (user?.primaryEmailAddress?.emailAddress || ''));
@@ -482,18 +694,20 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
       const configData: Record<string, any> = {
         ...deployConfigValues,
         email_channel_choice: deployEmailChannel,
+        file_access_choice: hasFileProducts ? fileAccessChoice : 'none',
+        file_products: fileProducts,
+        oauth_scope: computedScope,
         user_email: effectiveEmail,
         personal_email: effectiveEmail,
         gmail_app_email: deployAppEmail.trim(),
         gmail_app_password: deployAppPassword.trim(),
-        oauth_granted: deployEmailChannel === 'oauth',
-        oauth_provider: deployEmailChannel === 'oauth' ? 'google' : 'none',
-        oauth_email: deployEmailChannel === 'oauth' ? effectiveEmail : '',
-        google_auth_mode: effectiveAuthMode,
-        drive_auth_choice: driveAuthChoice,
-        manual_file_id: manualFileId.trim(),
-        manual_asset_name: manualAssetName.trim(),
-        gmail_auth_choice: gmailAuthChoice,
+        oauth_granted: needsOAuth ? isStep3OAuthGranted : true,
+        oauth_provider: needsOAuth ? 'google' : 'none',
+        oauth_email: step3OAuthEmail || effectiveEmail,
+        google_file_id: pickedGoogleFile?.id,
+        google_file_name: pickedGoogleFile?.name,
+        google_file_mime: pickedGoogleFile?.mimeType,
+        google_file_url: pickedGoogleFile?.url,
       };
 
       const dep = await apiClient.deployTool({
@@ -716,6 +930,169 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
                     </button>
                   </div>
                 </motion.div>
+              ) : isReviewingTasks ? (
+                /* Human-In-The-Loop Task Review & Confirmation View */
+                <motion.div
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="space-y-5"
+                >
+                  {/* HITL Banner */}
+                  <div className="flex items-start justify-between p-4 rounded-xl bg-gradient-to-r from-indigo-950/70 to-purple-950/50 border border-indigo-500/30">
+                    <div className="flex items-start gap-3">
+                      <div className="p-2 rounded-lg bg-indigo-500/20 text-indigo-400 shrink-0 mt-0.5">
+                        <ListTodo className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[11px] font-bold uppercase tracking-wider text-indigo-300 bg-indigo-500/20 px-2 py-0.5 rounded-md">
+                            Human-In-The-Loop
+                          </span>
+                          <span className="text-xs text-white font-semibold">Confirm Extracted Execution Tasks</span>
+                        </div>
+                        <p className="text-xs text-slate-300 mt-1 leading-relaxed">
+                          Our AI reviewed your prompt against platform rules and extracted these deterministic tasks. Review them below, provide feedback to refine, or confirm to proceed.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Card 1: Original User Prompt */}
+                  <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                        <FileText className="w-3.5 h-3.5 text-indigo-400" />
+                        Original Prompt
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleRejectTasks}
+                        className="text-[11px] text-indigo-400 hover:text-indigo-300 flex items-center gap-1 transition-colors"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        Edit Prompt
+                      </button>
+                    </div>
+                    <p className="text-xs text-slate-300 italic bg-slate-900/80 p-3 rounded-lg border border-slate-800/80 leading-relaxed">
+                      &ldquo;{description}&rdquo;
+                    </p>
+                  </div>
+
+                  {/* Card 2: Confirmed Extracted Tasks */}
+                  <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-emerald-400 flex items-center gap-1.5">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                        Confirmed Extracted Tasks ({extractedTasks.length})
+                      </span>
+                      <span className="text-[10px] font-medium px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
+                        Admin Rules Aligned
+                      </span>
+                    </div>
+
+                    <div className="space-y-2">
+                      {extractedTasks.map((taskItem, idx) => (
+                        <div
+                          key={idx}
+                          className="flex items-start gap-3 p-3 rounded-xl bg-slate-900/90 border border-slate-800/90 hover:border-slate-700 transition-colors"
+                        >
+                          <span className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-300 font-bold text-[11px] flex items-center justify-center shrink-0 mt-0.5">
+                            {idx + 1}
+                          </span>
+                          <p className="text-xs text-slate-200 leading-relaxed font-medium">
+                            {taskItem}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+
+                    {taskNotes && (
+                      <p className="text-[11px] text-slate-400 italic pt-1">
+                        AI Context: {taskNotes}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Feedback Input Field */}
+                  <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 space-y-2">
+                    <label className="block text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                      <MessageSquare className="w-3.5 h-3.5 text-purple-400" />
+                      Feedback &amp; Modifications (Optional)
+                    </label>
+                    <p className="text-[11px] text-slate-400">
+                      Want to adjust anything? Enter your feedback below (e.g. &ldquo;Do not send email to customers, only send summary to me&rdquo;) and click &ldquo;Update Tasks&rdquo;.
+                    </p>
+                    <div className="flex gap-2 pt-1">
+                      <input
+                        type="text"
+                        value={taskFeedback}
+                        onChange={(e) => setTaskFeedback(e.target.value)}
+                        placeholder="Type feedback to modify tasks..."
+                        className="flex-1 px-3 py-2 rounded-xl bg-slate-900 border border-slate-700/80 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-purple-500"
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleRefineTasksWithFeedback();
+                          }
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={handleRefineTasksWithFeedback}
+                        disabled={isRefiningTasks || !taskFeedback.trim()}
+                        className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white text-xs font-semibold transition-colors shrink-0 flex items-center gap-1.5"
+                      >
+                        {isRefiningTasks ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            <span>Updating...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className="w-3.5 h-3.5" />
+                            <span>Update Tasks</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Quick Action Buttons */}
+                  <div className="flex items-center justify-between pt-2">
+                    <button
+                      type="button"
+                      onClick={handleRejectTasks}
+                      className="px-4 py-2 rounded-xl border border-slate-700 bg-slate-800/80 hover:bg-slate-800 text-slate-300 hover:text-white text-xs font-medium transition-colors"
+                    >
+                      No, Describe Again
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleConfirmTasksAndProceed()}
+                      disabled={isGeneratingSchema || extractedTasks.length === 0}
+                      className="px-6 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold shadow-lg shadow-emerald-600/25 transition-all flex items-center gap-2"
+                    >
+                      {isGeneratingSchema ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>Generating Schema...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Check className="w-4 h-4" />
+                          <span>Yes, Confirm &amp; Continue</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  {step1Error && (
+                    <div className="flex items-center gap-2 p-3 rounded-xl bg-rose-500/10 border border-rose-500/25 text-rose-300 text-xs">
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                      <span>{step1Error}</span>
+                    </div>
+                  )}
+                </motion.div>
               ) : (
                 /* Standard Step 1 Concept Prompt Area */
                 <>
@@ -805,6 +1182,29 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
               animate={{ opacity: 1, x: 0 }}
               className="space-y-6"
             >
+              {/* Confirmed Tasks Summary Box */}
+              {(toolTasks || extractedTasksText) && (
+                <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-emerald-400 flex items-center gap-1.5">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                      Confirmed Execution Tasks
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setStep(1)}
+                      className="text-[11px] text-indigo-400 hover:text-indigo-300 flex items-center gap-1 transition-colors"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      Review / Edit Tasks
+                    </button>
+                  </div>
+                  <div className="p-3 rounded-lg bg-slate-900/90 border border-slate-800 text-xs text-slate-200 whitespace-pre-line leading-relaxed font-medium">
+                    {toolTasks || extractedTasksText}
+                  </div>
+                </div>
+              )}
+
               {/* Tool Metadata Fields */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
@@ -835,18 +1235,36 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
 
               <div>
                 <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  Specification Summary *
+                  Original Prompt (Saved as Tool Description) *
                 </label>
                 <textarea
-                  rows={2}
+                  rows={3}
                   value={toolDescription}
                   onChange={(e) => setToolDescription(e.target.value)}
+                  placeholder="Original prompt describing this tool..."
                   className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 resize-none"
                 />
               </div>
 
-              {/* Advanced Flags (HITL & OAuth) */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-4 rounded-xl bg-slate-950/60 border border-slate-800/80">
+              {/* Execution Task Points Preview */}
+              {(toolTasks || extractedTasksText) && (
+                <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-semibold text-indigo-400 uppercase tracking-wider">
+                      Confirmed Task Points (Saved in Tasks Column)
+                    </span>
+                    <span className="text-[10px] text-slate-500 font-mono">
+                      Deterministic Workflow
+                    </span>
+                  </div>
+                  <div className="text-xs text-slate-300 leading-relaxed bg-slate-900/60 p-2.5 rounded-lg border border-slate-800/80 font-mono text-[11px] whitespace-pre-wrap">
+                    {toolTasks || extractedTasksText}
+                  </div>
+                </div>
+              )}
+
+              {/* Advanced Flags (HITL) */}
+              <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800/80">
                 <div className="flex items-start justify-between gap-3 p-3 rounded-xl bg-slate-900/60 border border-slate-800">
                   <div className="min-w-0 pr-2">
                     <div className="flex items-center gap-2">
@@ -883,426 +1301,9 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
                     />
                   </button>
                 </div>
-
-                <div className="space-y-2">
-                  <label className="flex items-start gap-3 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={requiresOAuth}
-                      onChange={(e) => {
-                        setRequiresOAuth(e.target.checked);
-                        if (!e.target.checked) setOauthProvider('none');
-                        else if (oauthProvider === 'none') setOauthProvider('google');
-                      }}
-                      className="mt-0.5 w-4 h-4 rounded text-indigo-600 focus:ring-0 bg-slate-900 border-slate-700"
-                    />
-                    <div>
-                      <span className="text-xs font-semibold text-slate-200 block">
-                        Requires OAuth Authentication
-                      </span>
-                      <span className="text-[11px] text-slate-400">
-                        Demands 3rd-party user token (e.g. Gmail/Sheets).
-                      </span>
-                    </div>
-                  </label>
-
-                  {requiresOAuth && (
-                    <div className="pl-7">
-                      <select
-                        value={oauthProvider}
-                        onChange={(e) => setOauthProvider(e.target.value as any)}
-                        className="px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-700 text-xs text-slate-200"
-                      >
-                        <option value="google">Google OAuth (Gmail / Sheets)</option>
-                        <option value="github">GitHub OAuth (Repos / PRs)</option>
-                      </select>
-                    </div>
-                  )}
-                </div>
-
-                {/* Tool Marketplace Visibility (Public vs Private) */}
-                <div className="p-3.5 rounded-xl bg-slate-900/60 border border-slate-800 space-y-2.5">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-semibold text-slate-200">
-                        Marketplace Visibility
-                      </span>
-                      <span
-                        className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${
-                          isPublic
-                            ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30 font-semibold'
-                            : 'bg-amber-500/15 text-amber-300 border-amber-500/30 font-semibold'
-                        }`}
-                      >
-                        {isPublic ? 'Public (Marketplace)' : 'Private (Only Me)'}
-                      </span>
-                    </div>
-                  </div>
-
-                  <p className="text-[11px] text-slate-400">
-                    Tools are public on the marketplace by default. Choose Private if this tool contains confidential internal logic.
-                  </p>
-
-                  <div className="grid grid-cols-2 gap-2.5 pt-1">
-                    <button
-                      type="button"
-                      onClick={() => setIsPublic(true)}
-                      className={`p-3 rounded-xl border text-left transition-all ${
-                        isPublic
-                          ? 'bg-indigo-600/15 border-indigo-500 text-white shadow-md shadow-indigo-600/10 ring-1 ring-indigo-500/50'
-                          : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-xs font-bold flex items-center gap-1.5">
-                          <Globe className={`w-3.5 h-3.5 ${isPublic ? 'text-indigo-400' : 'text-slate-500'}`} />
-                          <span>Public</span>
-                        </span>
-                        {isPublic && <Check className="w-3.5 h-3.5 text-indigo-400" />}
-                      </div>
-                      <p className="text-[10px] text-slate-400 leading-snug">
-                        Discoverable and deployable by any user on the public marketplace.
-                      </p>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setIsPublic(false)}
-                      className={`p-3 rounded-xl border text-left transition-all ${
-                        !isPublic
-                          ? 'bg-indigo-600/15 border-indigo-500 text-white shadow-md shadow-indigo-600/10 ring-1 ring-indigo-500/50'
-                          : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-xs font-bold flex items-center gap-1.5">
-                          <Lock className={`w-3.5 h-3.5 ${!isPublic ? 'text-amber-400' : 'text-slate-500'}`} />
-                          <span>Private</span>
-                        </span>
-                        {!isPublic && <Check className="w-3.5 h-3.5 text-indigo-400" />}
-                      </div>
-                      <p className="text-[10px] text-slate-400 leading-snug">
-                        Strictly confidential. Visible and executable only by your user account.
-                      </p>
-                    </button>
-                  </div>
-                </div>
               </div>
 
-              {/* Specification 3 & 4: Google Products Authorization & Asset Quarantine Configuration */}
-              {(googleProductsDetected.length > 0 || addGmailOauthFlag) && (
-                <div className="p-5 rounded-2xl bg-slate-950/80 border border-indigo-500/30 space-y-6">
-                  <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-                    <div className="flex items-center gap-2">
-                      <div className="p-1.5 rounded-lg bg-indigo-500/20 text-indigo-400">
-                        <Database className="w-4 h-4" />
-                      </div>
-                      <div>
-                        <h4 className="text-xs font-bold text-white uppercase tracking-wider">
-                          Google Products Authorization Channels
-                        </h4>
-                        <p className="text-[11px] text-slate-400">
-                          Detected Google products:{' '}
-                          <span className="text-indigo-300 font-semibold">
-                            {[...googleProductsDetected, ...(addGmailOauthFlag && !googleProductsDetected.includes('Gmail') ? ['Gmail'] : [])].join(', ') || 'Google Cloud'}
-                          </span>
-                        </p>
-                      </div>
-                    </div>
-                    <span className="text-[10px] font-semibold uppercase px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                      Zero Cross-Tenant Leakage
-                    </span>
-                  </div>
 
-                  {/* Section A: Drive/Sheets/Docs/Forms Authorization (if detected) */}
-                  {googleProductsDetected.some((p) => ['drive', 'sheets', 'docs', 'documents', 'forms'].includes(p.toLowerCase())) && (
-                    <div className="space-y-3">
-                      <label className="block text-xs font-semibold text-slate-200">
-                        Drive / Sheets / Docs / Forms Authorization Method (Choose 1 of 3):
-                      </label>
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                        {/* Choice 1: Full Access OAuth */}
-                        <button
-                          type="button"
-                          onClick={() => setDriveAuthChoice('oauth_full')}
-                          className={`p-3.5 rounded-xl border text-left transition-all relative ${
-                            driveAuthChoice === 'oauth_full'
-                              ? 'bg-indigo-600/15 border-indigo-500 text-white shadow-md shadow-indigo-500/10'
-                              : 'bg-slate-900/60 border-slate-800 text-slate-300 hover:border-slate-700'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between mb-1.5">
-                            <span className="text-xs font-bold">1. Full Access</span>
-                            <Lock className={`w-3.5 h-3.5 ${driveAuthChoice === 'oauth_full' ? 'text-indigo-400' : 'text-slate-500'}`} />
-                          </div>
-                          <p className="text-[11px] text-slate-400 leading-snug">
-                            Standard Google OAuth consent screen granting full Drive file access to the user.
-                          </p>
-                        </button>
-
-                        {/* Choice 2: Granular Asset Picker */}
-                        <button
-                          type="button"
-                          onClick={() => setDriveAuthChoice('granular_picker')}
-                          className={`p-3.5 rounded-xl border text-left transition-all relative ${
-                            driveAuthChoice === 'granular_picker'
-                              ? 'bg-indigo-600/15 border-indigo-500 text-white shadow-md shadow-indigo-500/10'
-                              : 'bg-slate-900/60 border-slate-800 text-slate-300 hover:border-slate-700'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between mb-1.5">
-                            <span className="text-xs font-bold">2. Granular Asset Picker</span>
-                            <FolderCheck className={`w-3.5 h-3.5 ${driveAuthChoice === 'granular_picker' ? 'text-indigo-400' : 'text-slate-500'}`} />
-                          </div>
-                          <p className="text-[11px] text-slate-400 leading-snug">
-                            Google Picker API dialog to select only specific individual files or folders.
-                          </p>
-                        </button>
-
-                        {/* Choice 3: Manual Delegation */}
-                        <button
-                          type="button"
-                          onClick={() => setDriveAuthChoice('manual_delegation')}
-                          className={`p-3.5 rounded-xl border text-left transition-all relative ${
-                            driveAuthChoice === 'manual_delegation'
-                              ? 'bg-indigo-600/15 border-indigo-500 text-white shadow-md shadow-indigo-500/10'
-                              : 'bg-slate-900/60 border-slate-800 text-slate-300 hover:border-slate-700'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between mb-1.5">
-                            <span className="text-xs font-bold">3. Manual Delegation</span>
-                            <ShieldCheck className={`w-3.5 h-3.5 ${driveAuthChoice === 'manual_delegation' ? 'text-indigo-400' : 'text-slate-500'}`} />
-                          </div>
-                          <p className="text-[11px] text-slate-400 leading-snug">
-                            Share asset with platform service account: <code className="text-amber-300 font-mono">narainad308@gmail.com</code>.
-                          </p>
-                        </button>
-                      </div>
-
-                      {/* Details Panel for Choice 3: Manual Delegation */}
-                      {driveAuthChoice === 'manual_delegation' && (
-                        <div className="p-4 rounded-xl bg-slate-900/80 border border-slate-800 space-y-3">
-                          <div className="flex items-start gap-2.5 text-xs text-slate-300">
-                            <HelpCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                            <div>
-                              <p className="font-semibold text-slate-200">How to share your asset with Platform Service Account:</p>
-                              <ol className="list-decimal ml-4 mt-1 space-y-1 text-slate-400 text-[11px]">
-                                <li>Open Google Drive / Docs / Sheets and locate your target file or folder.</li>
-                                <li>Click <span className="text-white font-medium">&quot;Share&quot;</span> and invite our service account: <code className="text-indigo-300 font-mono bg-slate-950 px-1.5 py-0.5 rounded">narainad308@gmail.com</code> with Editor or Viewer permissions.</li>
-                                <li>Copy the File ID from the share link (the long alphanumeric string) and enter it below.</li>
-                              </ol>
-                            </div>
-                          </div>
-
-                          <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end pt-1">
-                            <div className="md:col-span-5">
-                              <label className="block text-[11px] font-medium text-slate-400 mb-1">
-                                Google File or Folder ID *
-                              </label>
-                              <input
-                                type="text"
-                                value={manualFileId}
-                                onChange={(e) => setManualFileId(e.target.value)}
-                                placeholder="e.g. 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms"
-                                className="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-xs font-mono text-slate-200 focus:outline-none focus:border-indigo-500"
-                              />
-                            </div>
-
-                            <div className="md:col-span-4">
-                              <label className="block text-[11px] font-medium text-slate-400 mb-1">
-                                Asset Display Label (Optional)
-                              </label>
-                              <input
-                                type="text"
-                                value={manualAssetName}
-                                onChange={(e) => setManualAssetName(e.target.value)}
-                                placeholder="e.g. Q4 Sales Sheet"
-                                className="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
-                              />
-                            </div>
-
-                            <div className="md:col-span-3">
-                              <button
-                                type="button"
-                                onClick={handleVerifySharedAsset}
-                                disabled={isVerifyingAsset || !manualFileId.trim()}
-                                className="w-full inline-flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold disabled:opacity-50 transition-colors shadow-sm"
-                              >
-                                {isVerifyingAsset ? (
-                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                ) : (
-                                  <ShieldCheck className="w-3.5 h-3.5" />
-                                )}
-                                <span>{isVerifyingAsset ? 'Verifying...' : 'Verify Access'}</span>
-                              </button>
-                            </div>
-                          </div>
-
-                          {assetVerificationResult && (
-                            <div
-                              className={`p-3 rounded-lg text-xs flex items-start gap-2 ${
-                                assetVerificationResult.verified
-                                  ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300'
-                                  : 'bg-rose-500/10 border border-rose-500/30 text-rose-300'
-                              }`}
-                            >
-                              {assetVerificationResult.verified ? (
-                                <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-400" />
-                              ) : (
-                                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
-                              )}
-                              <span>{assetVerificationResult.message}</span>
-                            </div>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Details Panel for Choice 2: Granular Asset Picker */}
-                      {driveAuthChoice === 'granular_picker' && (
-                        <div className="p-4 rounded-xl bg-slate-900/80 border border-slate-800 space-y-2">
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-semibold text-slate-200">Google Picker API Framework</span>
-                            <span className="text-[10px] text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded">Granular Consent</span>
-                          </div>
-                          <p className="text-[11px] text-slate-400">
-                            Users can selectively authenticate and choose individual spreadsheets or docs at runtime using the interactive Google Picker dialog without granting broad Drive permissions.
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Section B: Gmail Outgoing Dispatch (Triggered if add_gmail_oauth_flag is true) */}
-                  {addGmailOauthFlag && (
-                    <div className="space-y-3 pt-3 border-t border-slate-800/80">
-                      <div className="flex items-center justify-between">
-                        <label className="block text-xs font-semibold text-slate-200 flex items-center gap-1.5">
-                          <Mail className="w-3.5 h-3.5 text-indigo-400" />
-                          <span>Gmail Outbound Authorization Flow (Choose 1 of 3):</span>
-                        </label>
-                        <span className="text-[10px] font-mono text-amber-300 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
-                          Scope: gmail.send only
-                        </span>
-                      </div>
-
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                        {/* Option 1: Direct OAuth */}
-                        <button
-                          type="button"
-                          onClick={() => setGmailAuthChoice('oauth_send')}
-                          className={`p-3.5 rounded-xl border text-left transition-all ${
-                            gmailAuthChoice === 'oauth_send'
-                              ? 'bg-indigo-600/15 border-indigo-500 text-white shadow-md shadow-indigo-500/10'
-                              : 'bg-slate-900/60 border-slate-800 text-slate-300 hover:border-slate-700'
-                          }`}
-                        >
-                          <span className="text-xs font-bold block mb-1">1. Direct OAuth</span>
-                          <p className="text-[11px] text-slate-400 leading-snug">
-                            Authenticate directly via Google OAuth for <code className="text-indigo-300 font-mono">gmail.send</code> capability only.
-                          </p>
-                        </button>
-
-                        {/* Option 2: App Password */}
-                        <button
-                          type="button"
-                          onClick={() => setGmailAuthChoice('app_password')}
-                          className={`p-3.5 rounded-xl border text-left transition-all ${
-                            gmailAuthChoice === 'app_password'
-                              ? 'bg-indigo-600/15 border-indigo-500 text-white shadow-md shadow-indigo-500/10'
-                              : 'bg-slate-900/60 border-slate-800 text-slate-300 hover:border-slate-700'
-                          }`}
-                        >
-                          <span className="text-xs font-bold block mb-1">2. Custom App Password</span>
-                          <p className="text-[11px] text-slate-400 leading-snug">
-                            Supply your Gmail address + App Password generated in Google Account Security.
-                          </p>
-                        </button>
-
-                        {/* Option 3: Internal Platform System Dispatch */}
-                        <button
-                          type="button"
-                          onClick={() => setGmailAuthChoice('platform_dispatch')}
-                          className={`p-3.5 rounded-xl border text-left transition-all ${
-                            gmailAuthChoice === 'platform_dispatch'
-                              ? 'bg-indigo-600/15 border-indigo-500 text-white shadow-md shadow-indigo-500/10'
-                              : 'bg-slate-900/60 border-slate-800 text-slate-300 hover:border-slate-700'
-                          }`}
-                        >
-                          <span className="text-xs font-bold block mb-1">3. Platform Dispatch</span>
-                          <p className="text-[11px] text-slate-400 leading-snug">
-                            Dispatch outgoing messages via internal platform email (<code className="text-amber-300 font-mono">narainad308@gmail.com</code>).
-                          </p>
-                        </button>
-                      </div>
-
-                      {/* Option 2 Details & Tutorial Form */}
-                      {gmailAuthChoice === 'app_password' && (
-                        <div className="p-4 rounded-xl bg-slate-900/90 border border-slate-800 space-y-3">
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                            <div>
-                              <label className="block text-[11px] font-medium text-slate-400 mb-1">
-                                Your Gmail Address *
-                              </label>
-                              <input
-                                type="email"
-                                value={gmailAppEmail}
-                                onChange={(e) => setGmailAppEmail(e.target.value)}
-                                placeholder="you@gmail.com"
-                                className="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
-                              />
-                            </div>
-
-                            <div>
-                              <label className="block text-[11px] font-medium text-slate-400 mb-1">
-                                16-Character App Password (App ID) *
-                              </label>
-                              <input
-                                type="password"
-                                value={gmailAppPassword}
-                                onChange={(e) => setGmailAppPassword(e.target.value)}
-                                placeholder="xxxx xxxx xxxx xxxx"
-                                className="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-xs font-mono text-slate-200 focus:outline-none focus:border-indigo-500"
-                              />
-                            </div>
-                          </div>
-
-                          {/* Collapsible Step-by-Step Tutorial Form */}
-                          <div className="border border-slate-800 rounded-lg overflow-hidden bg-slate-950/50">
-                            <button
-                              type="button"
-                              onClick={() => setShowAppPasswordTutorial(!showAppPasswordTutorial)}
-                              className="w-full px-3 py-2 flex items-center justify-between text-left text-xs font-medium text-indigo-300 hover:bg-slate-900/50 transition-colors"
-                            >
-                              <span className="flex items-center gap-1.5">
-                                <HelpCircle className="w-3.5 h-3.5" />
-                                <span>How to generate a Google App Password (Step-by-Step Tutorial)</span>
-                              </span>
-                              {showAppPasswordTutorial ? (
-                                <ChevronUp className="w-4 h-4 text-slate-400" />
-                              ) : (
-                                <ChevronDown className="w-4 h-4 text-slate-400" />
-                              )}
-                            </button>
-
-                            {showAppPasswordTutorial && (
-                              <div className="p-3 text-[11px] text-slate-300 space-y-2 border-t border-slate-800 bg-slate-950">
-                                <p className="font-semibold text-slate-200">Follow these 5 steps in your Google Account:</p>
-                                <ol className="list-decimal ml-4 space-y-1 text-slate-400">
-                                  <li>Go to your Google Account Security Portal: <a href="https://myaccount.google.com/security" target="_blank" rel="noreferrer" className="text-indigo-400 underline inline-flex items-center gap-1">myaccount.google.com/security <ExternalLink className="w-2.5 h-2.5 inline" /></a></li>
-                                  <li>Ensure <span className="text-white font-medium">&quot;2-Step Verification&quot;</span> is turned ON.</li>
-                                  <li>In the search box, search for <span className="text-white font-medium">&quot;App Passwords&quot;</span> or navigate to Security &rarr; App Passwords.</li>
-                                  <li>Enter <code className="text-indigo-300 bg-slate-900 px-1 py-0.5 rounded">{COMPANY_NAME} Agent</code> as the App Name and click <span className="text-white font-medium">&quot;Create&quot;</span>.</li>
-                                  <li>Copy the 16-character generated code (without spaces) and paste it into the field above.</li>
-                                </ol>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
 
               {/* Dynamic Input Schema Properties */}
               <div>
@@ -1509,25 +1510,228 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
                     </div>
                   )}
 
-                  {/* 3 Email Delivery Channel Options */}
-                  <div className="space-y-3">
-                    <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider">
-                      Outbound Email Delivery Service
-                    </h4>
-                    <p className="text-[11px] text-slate-400">
-                      Choose which email identity this tool instance should use to dispatch notifications and reports:
-                    </p>
+                  {/* Google Workspace File Access (Sheets, Drive, Docs) */}
+                  {hasFileProducts && (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                          <FolderCheck className="w-4 h-4 text-indigo-400" />
+                          <span>Google Workspace File Access</span>
+                        </h4>
+                        <div className="flex items-center gap-1">
+                          {fileProducts.map((p) => (
+                            <span
+                              key={p}
+                              className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-300 border border-indigo-500/20"
+                            >
+                              {formatProductName(p)}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      <p className="text-[11px] text-slate-400">
+                        Choose how this tool instance should access your Google Sheets, Docs, or Drive files:
+                      </p>
 
-                    <div className="grid grid-cols-1 gap-2.5">
-                      {/* Option 1: Personal account with OAuth */}
-                      <div
-                        className={`p-3.5 rounded-xl border transition-all ${
-                          deployEmailChannel === 'oauth'
-                            ? 'bg-indigo-950/40 border-indigo-500 ring-1 ring-indigo-500'
-                            : 'bg-slate-950/50 border-slate-800 hover:border-slate-700'
-                        }`}
-                      >
-                        <label className="flex items-start gap-3 cursor-pointer">
+                      <div className="grid grid-cols-1 gap-2.5">
+                        {/* Option 1: Total Access from Consent Screen */}
+                        <label
+                          className={`flex items-start gap-3 p-3.5 rounded-xl border cursor-pointer transition-all ${
+                            fileAccessChoice === 'oauth_full'
+                              ? 'bg-indigo-950/40 border-indigo-500 ring-1 ring-indigo-500'
+                              : 'bg-slate-950/50 border-slate-800 hover:border-slate-700'
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            name="fileAccessChoice"
+                            value="oauth_full"
+                            checked={fileAccessChoice === 'oauth_full'}
+                            onChange={() => setFileAccessChoice('oauth_full')}
+                            className="mt-0.5 text-indigo-600 focus:ring-0 bg-slate-900 border-slate-700"
+                          />
+                          <div>
+                            <span className="text-xs font-semibold text-white block">
+                              Total Access from Consent Screen
+                            </span>
+                            <span className="text-[11px] text-slate-400">
+                              Grants full read/write access to {fileProducts.map(formatProductName).join(', ')} directly through Google OAuth consent.
+                            </span>
+                          </div>
+                        </label>
+
+                        {/* Option 2: Granular Access with Picker */}
+                        <div
+                          className={`p-3.5 rounded-xl border transition-all ${
+                            fileAccessChoice === 'granular_picker'
+                              ? 'bg-indigo-950/40 border-indigo-500 ring-1 ring-indigo-500'
+                              : 'bg-slate-950/50 border-slate-800 hover:border-slate-700'
+                          }`}
+                        >
+                          <label className="flex items-start gap-3 cursor-pointer">
+                            <input
+                              type="radio"
+                              name="fileAccessChoice"
+                              value="granular_picker"
+                              checked={fileAccessChoice === 'granular_picker'}
+                              onChange={() => setFileAccessChoice('granular_picker')}
+                              className="mt-0.5 text-indigo-600 focus:ring-0 bg-slate-900 border-slate-700"
+                            />
+                            <div>
+                              <span className="text-xs font-semibold text-white block">
+                                Granular Access with Google Drive Picker
+                              </span>
+                              <span className="text-[11px] text-slate-400">
+                                Limits authorization strictly to the specific files or spreadsheets you explicitly select via Google Drive Picker.
+                              </span>
+                            </div>
+                          </label>
+
+                          {fileAccessChoice === 'granular_picker' && (
+                            <div className="mt-3 pt-3 border-t border-slate-800/80">
+                              <GoogleDrivePicker
+                                userId={currentUserId}
+                                viewMimeTypes="application/vnd.google-apps.spreadsheet"
+                                supportDrives={true}
+                                showUploadView={false}
+                                buttonLabel="Select Spreadsheet from Google Drive"
+                                selectedFile={pickedGoogleFile}
+                                onFilePicked={(doc) => {
+                                  if (doc.mimeType === 'application/vnd.google-apps.folder' || (doc as any).type === 'folder' || !doc.mimeType.includes('spreadsheet')) {
+                                    return;
+                                  }
+                                  setPickedGoogleFile(doc);
+                                  setDeployConfigValues((prev) => ({
+                                    ...prev,
+                                    google_file_id: doc.id,
+                                    google_file_name: doc.name,
+                                    google_file_mime: doc.mimeType,
+                                    google_file_url: doc.url,
+                                  }));
+                                }}
+                                onClearSelection={() => {
+                                  setPickedGoogleFile(null);
+                                  setDeployConfigValues((prev) => {
+                                    const next = { ...prev };
+                                    delete next.google_file_id;
+                                    delete next.google_file_name;
+                                    delete next.google_file_mime;
+                                    delete next.google_file_url;
+                                    return next;
+                                  });
+                                }}
+                              />
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Option 3: Share File with Working Email */}
+                        <div
+                          className={`p-3.5 rounded-xl border transition-all ${
+                            fileAccessChoice === 'share_email'
+                              ? 'bg-indigo-950/40 border-indigo-500 ring-1 ring-indigo-500'
+                              : 'bg-slate-950/50 border-slate-800 hover:border-slate-700'
+                          }`}
+                        >
+                          <label className="flex items-start gap-3 cursor-pointer">
+                            <input
+                              type="radio"
+                              name="fileAccessChoice"
+                              value="share_email"
+                              checked={fileAccessChoice === 'share_email'}
+                              onChange={() => setFileAccessChoice('share_email')}
+                              className="mt-0.5 text-indigo-600 focus:ring-0 bg-slate-900 border-slate-700"
+                            />
+                            <div>
+                              <span className="text-xs font-semibold text-white block">
+                                Share File with Working Email (No Consent Screen Required)
+                              </span>
+                              <span className="text-[11px] text-slate-400">
+                                No OAuth consent screen needed. Share your Google Sheet or Doc with our service email.
+                              </span>
+                            </div>
+                          </label>
+
+                          {fileAccessChoice === 'share_email' && (
+                            <div className="pl-7 mt-3 pt-3 border-t border-slate-800/80 space-y-2.5">
+                              <div className="p-3 rounded-lg bg-slate-900/90 border border-slate-800 flex items-center justify-between gap-2">
+                                <div className="min-w-0">
+                                  <span className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold block">
+                                    Working Service Email (Editor Permission)
+                                  </span>
+                                  <code className="text-xs font-mono text-emerald-400 font-medium truncate block">
+                                    narainad308@gmail.com
+                                  </code>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    navigator.clipboard.writeText('narainad308@gmail.com');
+                                    setEmailCopied(true);
+                                    setTimeout(() => setEmailCopied(false), 2000);
+                                  }}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition-colors shrink-0"
+                                >
+                                  {emailCopied ? (
+                                    <>
+                                      <Check className="w-3.5 h-3.5" />
+                                      <span>Copied</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Copy className="w-3.5 h-3.5" />
+                                      <span>Copy Email</span>
+                                    </>
+                                  )}
+                                </button>
+                              </div>
+                              <p className="text-[11px] text-slate-300">
+                                💡 <span className="font-semibold text-slate-200">How to share:</span> Open your Google Sheet or Doc, click the <span className="text-white font-semibold">Share</span> button, add <span className="font-mono text-emerald-300">narainad308@gmail.com</span> with <span className="text-white font-semibold">Editor</span> permissions.
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Other Google Products Integration Notice */}
+                  {otherProducts.length > 0 && (
+                    <div className="p-3.5 rounded-xl bg-indigo-950/40 border border-indigo-500/30 flex items-start gap-3">
+                      <div className="p-1.5 rounded-lg bg-indigo-600/20 text-indigo-400 shrink-0 mt-0.5">
+                        <ShieldCheck className="w-4 h-4" />
+                      </div>
+                      <div className="text-xs">
+                        <span className="font-bold text-white block">
+                          Required Google Integration: {otherProducts.map(formatProductName).join(', ')}
+                        </span>
+                        <p className="text-[11px] text-slate-300 mt-0.5 leading-relaxed">
+                          This tool integrates with {otherProducts.map(formatProductName).join(' and ')}. Permissions will be included in the Google OAuth authorization below.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Outbound Email Delivery Service (Gmail) */}
+                  {hasGmail && (
+                    <div className="space-y-3">
+                      <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                        <Mail className="w-4 h-4 text-indigo-400" />
+                        <span>Outbound Email Delivery Service</span>
+                      </h4>
+                      <p className="text-[11px] text-slate-400">
+                        Choose which email identity this tool instance should use to dispatch notifications and reports:
+                      </p>
+
+                      <div className="grid grid-cols-1 gap-2.5">
+                        {/* Option 1: Personal account with OAuth */}
+                        <label
+                          className={`flex items-start gap-3 p-3.5 rounded-xl border cursor-pointer transition-all ${
+                            deployEmailChannel === 'oauth'
+                              ? 'bg-indigo-950/40 border-indigo-500 ring-1 ring-indigo-500'
+                              : 'bg-slate-950/50 border-slate-800 hover:border-slate-700'
+                          }`}
+                        >
                           <input
                             type="radio"
                             name="deployEmailChannel"
@@ -1546,105 +1750,128 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
                           </div>
                         </label>
 
-                        {deployEmailChannel === 'oauth' && (
-                          <div className="pl-7 mt-2 pt-2 border-t border-slate-800/80">
-                            <GoogleOAuthConsentButton
-                              userId={currentUserId}
-                              onStatusChange={(connected, email) => {
-                                setIsStep3OAuthGranted(connected);
-                                if (email) setStep3OAuthEmail(email);
-                              }}
-                              onSuccess={(email) => {
-                                setIsStep3OAuthGranted(true);
-                                if (email) setStep3OAuthEmail(email);
-                              }}
-                            />
+                        {/* Option 2: Provide App Password */}
+                        <label
+                          className={`flex items-start gap-3 p-3.5 rounded-xl border cursor-pointer transition-all ${
+                            deployEmailChannel === 'app_password'
+                              ? 'bg-indigo-950/40 border-indigo-500 ring-1 ring-indigo-500'
+                              : 'bg-slate-950/50 border-slate-800 hover:border-slate-700'
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            name="deployEmailChannel"
+                            value="app_password"
+                            checked={deployEmailChannel === 'app_password'}
+                            onChange={() => setDeployEmailChannel('app_password')}
+                            className="mt-0.5 text-indigo-600 focus:ring-0 bg-slate-900 border-slate-700"
+                          />
+                          <div className="w-full">
+                            <span className="text-xs font-semibold text-white block">
+                              Google Account App Password (Direct SMTP)
+                            </span>
+                            <span className="text-[11px] text-slate-400 block mb-2">
+                              Provide your Google email and generated 16-character Google App Password.
+                            </span>
+
+                            {deployEmailChannel === 'app_password' && (
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2 pt-2 border-t border-slate-800">
+                                <div>
+                                  <label className="block text-[11px] text-slate-300 mb-1">
+                                    Google Account Email *
+                                  </label>
+                                  <input
+                                    type="email"
+                                    value={deployAppEmail}
+                                    onChange={(e) => setDeployAppEmail(e.target.value)}
+                                    placeholder="user@gmail.com"
+                                    className="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-indigo-500"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-[11px] text-slate-300 mb-1">
+                                    16-Character App Password *
+                                  </label>
+                                  <input
+                                    type="password"
+                                    value={deployAppPassword}
+                                    onChange={(e) => setDeployAppPassword(e.target.value)}
+                                    placeholder="xxxx xxxx xxxx xxxx"
+                                    className="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-indigo-500"
+                                  />
+                                </div>
+                              </div>
+                            )}
                           </div>
-                        )}
+                        </label>
+
+                        {/* Option 3: Platform Default Account */}
+                        <label
+                          className={`flex items-start gap-3 p-3.5 rounded-xl border cursor-pointer transition-all ${
+                            deployEmailChannel === 'platform_default'
+                              ? 'bg-indigo-950/40 border-indigo-500 ring-1 ring-indigo-500'
+                              : 'bg-slate-950/50 border-slate-800 hover:border-slate-700'
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            name="deployEmailChannel"
+                            value="platform_default"
+                            checked={deployEmailChannel === 'platform_default'}
+                            onChange={() => setDeployEmailChannel('platform_default')}
+                            className="mt-0.5 text-indigo-600 focus:ring-0 bg-slate-900 border-slate-700"
+                          />
+                          <div>
+                            <span className="text-xs font-semibold text-white block">
+                              Platform Default Outbound Email (narainad308@gmail.com)
+                            </span>
+                            <span className="text-[11px] text-slate-400">
+                              Uses {COMPANY_NAME} managed infrastructure. No OAuth or credentials configuration needed.
+                            </span>
+                          </div>
+                        </label>
                       </div>
-
-                      {/* Option 2: Provide App Password */}
-                      <label
-                        className={`flex items-start gap-3 p-3.5 rounded-xl border cursor-pointer transition-all ${
-                          deployEmailChannel === 'app_password'
-                            ? 'bg-indigo-950/40 border-indigo-500 ring-1 ring-indigo-500'
-                            : 'bg-slate-950/50 border-slate-800 hover:border-slate-700'
-                        }`}
-                      >
-                        <input
-                          type="radio"
-                          name="deployEmailChannel"
-                          value="app_password"
-                          checked={deployEmailChannel === 'app_password'}
-                          onChange={() => setDeployEmailChannel('app_password')}
-                          className="mt-0.5 text-indigo-600 focus:ring-0 bg-slate-900 border-slate-700"
-                        />
-                        <div className="w-full">
-                          <span className="text-xs font-semibold text-white block">
-                            Google Account App Password (Direct SMTP)
-                          </span>
-                          <span className="text-[11px] text-slate-400 block mb-2">
-                            Provide your Google email and generated 16-character Google App Password.
-                          </span>
-
-                          {deployEmailChannel === 'app_password' && (
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2 pt-2 border-t border-slate-800">
-                              <div>
-                                <label className="block text-[11px] text-slate-300 mb-1">
-                                  Google Account Email *
-                                </label>
-                                <input
-                                  type="email"
-                                  value={deployAppEmail}
-                                  onChange={(e) => setDeployAppEmail(e.target.value)}
-                                  placeholder="user@gmail.com"
-                                  className="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-indigo-500"
-                                />
-                              </div>
-                              <div>
-                                <label className="block text-[11px] text-slate-300 mb-1">
-                                  16-Character App Password *
-                                </label>
-                                <input
-                                  type="password"
-                                  value={deployAppPassword}
-                                  onChange={(e) => setDeployAppPassword(e.target.value)}
-                                  placeholder="xxxx xxxx xxxx xxxx"
-                                  className="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-indigo-500"
-                                />
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      </label>
-
-                      {/* Option 3: Platform Default Account */}
-                      <label
-                        className={`flex items-start gap-3 p-3.5 rounded-xl border cursor-pointer transition-all ${
-                          deployEmailChannel === 'platform_default'
-                            ? 'bg-indigo-950/40 border-indigo-500 ring-1 ring-indigo-500'
-                            : 'bg-slate-950/50 border-slate-800 hover:border-slate-700'
-                        }`}
-                      >
-                        <input
-                          type="radio"
-                          name="deployEmailChannel"
-                          value="platform_default"
-                          checked={deployEmailChannel === 'platform_default'}
-                          onChange={() => setDeployEmailChannel('platform_default')}
-                          className="mt-0.5 text-indigo-600 focus:ring-0 bg-slate-900 border-slate-700"
-                        />
-                        <div>
-                          <span className="text-xs font-semibold text-white block">
-                            Platform Default Outbound Email (narainad308@gmail.com)
-                          </span>
-                          <span className="text-[11px] text-slate-400">
-                            Uses {COMPANY_NAME} managed infrastructure. No OAuth or credentials configuration needed.
-                          </span>
-                        </div>
-                      </label>
                     </div>
-                  </div>
+                  )}
+
+                  {/* Google OAuth Authorization Section (if any product needs OAuth) */}
+                  {needsOAuth && (
+                    <div className="space-y-3 p-4 rounded-xl bg-slate-950/70 border border-slate-800">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                          <KeyRound className="w-4 h-4 text-indigo-400" />
+                          <span>Google OAuth Authorization Required</span>
+                        </h4>
+                        <div className="flex items-center gap-1 flex-wrap">
+                          {requiredOAuthProducts.map((p) => (
+                            <span
+                              key={p}
+                              className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/20"
+                            >
+                              {formatProductName(p)}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      <p className="text-[11px] text-slate-400">
+                        Authorize access to your Google account for {requiredOAuthProducts.map(formatProductName).join(', ')}:
+                      </p>
+
+                      <GoogleOAuthConsentButton
+                        userId={currentUserId}
+                        scope={computedScope}
+                        requiredProducts={requiredOAuthProducts}
+                        onStatusChange={(connected, email) => {
+                          setIsStep3OAuthGranted(connected);
+                          if (email) setStep3OAuthEmail(email);
+                        }}
+                        onSuccess={(email) => {
+                          setIsStep3OAuthGranted(true);
+                          if (email) setStep3OAuthEmail(email);
+                        }}
+                      />
+                    </div>
+                  )}
 
                   {step3Error && (
                     <div className="flex items-center gap-2 p-3 rounded-xl bg-rose-500/10 border border-rose-500/25 text-rose-300 text-xs">
@@ -1655,7 +1882,11 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
 
                   <button
                     type="submit"
-                    disabled={isManualDeploying || (deployEmailChannel === 'oauth' && !isStep3OAuthGranted)}
+                    disabled={
+                      isManualDeploying ||
+                      (needsOAuth && !isStep3OAuthGranted) ||
+                      (hasGmail && deployEmailChannel === 'app_password' && (!deployAppEmail.trim() || !deployAppPassword.trim()))
+                    }
                     className="w-full inline-flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold shadow-lg shadow-indigo-600/30 transition-all active:scale-[0.99]"
                   >
                     {isManualDeploying ? (
@@ -1663,10 +1894,10 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
                         <Loader2 className="w-4 h-4 animate-spin" />
                         <span>Deploying Tool Instance...</span>
                       </>
-                    ) : deployEmailChannel === 'oauth' && !isStep3OAuthGranted ? (
+                    ) : needsOAuth && !isStep3OAuthGranted ? (
                       <>
                         <Lock className="w-4 h-4 text-amber-300" />
-                        <span>Grant Google Consent to Enable Deploy</span>
+                        <span>Grant Google Consent ({requiredOAuthProducts.map(formatProductName).join(', ')}) to Deploy</span>
                       </>
                     ) : (
                       <>
@@ -1778,31 +2009,65 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
         <div className="px-6 py-4 border-t border-slate-800 bg-slate-950/60 flex items-center justify-between shrink-0">
           {step === 1 && (
             <>
-              <button
-                type="button"
-                onClick={handleResetAndClose}
-                className="px-4 py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-white transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleProceedToStep2}
-                disabled={isGeneratingSchema || description.length < 15}
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold shadow-lg shadow-indigo-600/25 transition-all"
-              >
-                {isGeneratingSchema ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Analyzing &amp; Generating Schema...</span>
-                  </>
-                ) : (
-                  <>
-                    <span>Next: Customize Schema</span>
-                    <ArrowRight className="w-4 h-4" />
-                  </>
-                )}
-              </button>
+              {isReviewingTasks ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={handleRejectTasks}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-white transition-colors"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Back to Edit Prompt</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleConfirmTasksAndProceed()}
+                    disabled={isGeneratingSchema || extractedTasks.length === 0}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold shadow-lg shadow-emerald-600/25 transition-all"
+                  >
+                    {isGeneratingSchema ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Generating Schema...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Check className="w-4 h-4" />
+                        <span>Yes, Confirm Tasks &amp; Continue</span>
+                        <ArrowRight className="w-4 h-4" />
+                      </>
+                    )}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={handleResetAndClose}
+                    className="px-4 py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-white transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleExtractTasks}
+                    disabled={isExtractingTasks || description.length < 15}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold shadow-lg shadow-indigo-600/25 transition-all"
+                  >
+                    {isExtractingTasks ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Extracting &amp; Validating Tasks...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>Extract &amp; Review Tasks</span>
+                        <ArrowRight className="w-4 h-4" />
+                      </>
+                    )}
+                  </button>
+                </>
+              )}
             </>
           )}
 
