@@ -149,12 +149,12 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
   const [toolDescription, setToolDescription] = useState('');
   const [requiresOAuth, setRequiresOAuth] = useState(false);
   const [oauthProvider, setOauthProvider] = useState<'none' | 'google' | 'github'>('none');
-  const [requiresHitl, setRequiresHitl] = useState(false);
   const [isPublic, setIsPublic] = useState(true);
   const [fields, setFields] = useState<EditableField[]>([]);
   const [step2Error, setStep2Error] = useState<string | null>(null);
 
   // Step 3 State: Manual Deployment & Webhook
+  const [deployRequiresHitl, setDeployRequiresHitl] = useState(false);
   const [isDeploying, setIsDeploying] = useState(false);
   const [createdTool, setCreatedTool] = useState<CustomTool | null>(null);
   const [deployment, setDeployment] = useState<UserToolDeployment | null>(null);
@@ -303,7 +303,6 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
       }
       setRequiresOAuth(!!generated.requires_oauth);
       setOauthProvider(generated.oauth_provider || (generated.google_products_detected?.length ? 'google' : 'none'));
-      setRequiresHitl(!!generated.requires_hitl);
       setAddGmailOauthFlag(!!generated.add_gmail_oauth_flag);
       setGoogleProductsDetected(generated.google_products_detected || []);
       setGoogleAuthFlowRequired(generated.google_auth_flow_required || 'none');
@@ -419,7 +418,7 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
     setToolDescription('');
     setRequiresOAuth(false);
     setOauthProvider('none');
-    setRequiresHitl(false);
+    setDeployRequiresHitl(false);
     setAddGmailOauthFlag(false);
     setGoogleProductsDetected([]);
     setGoogleAuthFlowRequired('none');
@@ -561,7 +560,6 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
         form_schema: formSchema,
         requires_oauth: requiresOAuth || (googleProductsDetected.length > 0 && driveAuthChoice === 'oauth_full') || (addGmailOauthFlag && gmailAuthChoice === 'oauth_send'),
         oauth_provider: requiresOAuth ? oauthProvider : (googleProductsDetected.length > 0 || addGmailOauthFlag ? 'google' : 'none'),
-        requires_hitl: requiresHitl,
         is_public: isPublic,
         author_id: currentUserId,
         add_gmail_oauth_flag: addGmailOauthFlag,
@@ -714,6 +712,7 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
         tool_id: createdTool.id,
         user_id: currentUserId,
         config_data: configData,
+        requires_hitl: deployRequiresHitl,
       });
 
       setDeployment(dep);
@@ -1263,45 +1262,7 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
                 </div>
               )}
 
-              {/* Advanced Flags (HITL) */}
-              <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800/80">
-                <div className="flex items-start justify-between gap-3 p-3 rounded-xl bg-slate-900/60 border border-slate-800">
-                  <div className="min-w-0 pr-2">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-semibold text-slate-200">
-                        Human-in-the-Loop (HITL)
-                      </span>
-                      <span
-                        className={`text-[10px] font-mono px-1.5 py-0.2 rounded border transition-colors ${
-                          requiresHitl
-                            ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 font-bold'
-                            : 'bg-slate-800 text-slate-400 border-slate-700 font-medium'
-                        }`}
-                      >
-                        {requiresHitl ? 'ON' : 'OFF'}
-                      </span>
-                    </div>
-                    <span className="text-[11px] text-slate-400 block mt-0.5">
-                      Pauses LangGraph workflow before destructive actions for manual approval.
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={requiresHitl}
-                    onClick={() => setRequiresHitl((prev) => !prev)}
-                    className={`relative inline-flex h-5 w-10 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                      requiresHitl ? 'bg-indigo-600' : 'bg-slate-800 border-slate-700'
-                    }`}
-                  >
-                    <span
-                      className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                        requiresHitl ? 'translate-x-5' : 'translate-x-0'
-                      }`}
-                    />
-                  </button>
-                </div>
-              </div>
+
 
 
 
@@ -1873,6 +1834,47 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
                     </div>
                   )}
 
+                  {/* Human-in-the-Loop (HITL) Deployment Gatekeeper */}
+                  <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 space-y-2">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 pr-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                            <ShieldCheck className="w-4 h-4 text-amber-400" />
+                            <span>Human-in-the-Loop (HITL) Gatekeeper</span>
+                          </span>
+                          <span
+                            className={`text-[10px] font-mono px-2 py-0.5 rounded border transition-colors ${
+                              deployRequiresHitl
+                                ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 font-bold'
+                                : 'bg-slate-800 text-slate-400 border-slate-700 font-medium'
+                            }`}
+                          >
+                            {deployRequiresHitl ? 'ENABLED' : 'DISABLED'}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-400 mt-1">
+                          When enabled for this deployment, incoming webhooks and automated workflow runs will pause before executing external actions, sending you an approval notification.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={deployRequiresHitl}
+                        onClick={() => setDeployRequiresHitl((prev) => !prev)}
+                        className={`relative inline-flex h-5 w-10 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                          deployRequiresHitl ? 'bg-amber-500' : 'bg-slate-800 border-slate-700'
+                        }`}
+                      >
+                        <span
+                          className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                            deployRequiresHitl ? 'translate-x-5' : 'translate-x-0'
+                          }`}
+                        />
+                      </button>
+                    </div>
+                  </div>
+
                   {step3Error && (
                     <div className="flex items-center gap-2 p-3 rounded-xl bg-rose-500/10 border border-rose-500/25 text-rose-300 text-xs">
                       <AlertCircle className="w-4 h-4 shrink-0" />
@@ -1979,7 +1981,9 @@ export function CreateToolModal({ isOpen, onClose, onSuccess }: CreateToolModalP
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-400">Human-In-The-Loop:</span>
-                      <span className="text-slate-200">{createdTool?.requires_hitl ? 'Enabled' : 'Disabled'}</span>
+                      <span className={`font-semibold ${deployment?.requires_hitl ? 'text-amber-300' : 'text-slate-300'}`}>
+                        {deployment?.requires_hitl ? 'Enabled' : 'Disabled'}
+                      </span>
                     </div>
                   </div>
 

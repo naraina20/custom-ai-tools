@@ -206,6 +206,8 @@ class GoogleOAuthCallbackView(APIView):
 
             logger.info("Successfully saved Google OAuth token for user '%s' (%s)", token_rec.user_id, account_email)
 
+
+
             return self._render_html_response(
                 success=True,
                 title="Google Account Connected",
@@ -493,6 +495,8 @@ class GoogleOAuthCodeExchangeView(APIView):
                 if "forms" in s:
                     granted_products.append("forms")
             granted_products = list(dict.fromkeys(granted_products))
+
+
 
             return Response({
                 "success": True,

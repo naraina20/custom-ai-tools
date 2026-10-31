@@ -32,7 +32,6 @@ class GeneratedSchemaResponseSerializer(serializers.Serializer):
         choices=[('google', 'Google'), ('github', 'GitHub'), ('none', 'None')],
         default='none'
     )
-    requires_hitl = serializers.BooleanField(default=False)
     form_schema = serializers.DictField(default=dict)
     api_config = serializers.DictField(required=False, default=dict)
 
@@ -59,6 +58,8 @@ class SharedUserAssetSerializer(serializers.ModelSerializer):
             'delegation_type',
             'service_account_email',
             'is_verified',
+            'is_active',
+            'description',
             'verified_at',
             'last_error',
             'metadata',
@@ -84,6 +85,10 @@ class UserToolDeploymentSerializer(serializers.ModelSerializer):
             'user_webhook_secret',
             'webhook_url',
             'config_data',
+            'requires_hitl',
+            'email_service',
+            'google_email',
+            'google_app_password',
             'is_active',
             'created_at',
             'updated_at',
@@ -113,7 +118,6 @@ class CustomToolSerializer(serializers.ModelSerializer):
             'is_public',
             'requires_oauth',
             'oauth_provider',
-            'requires_hitl',
             'add_gmail_oauth_flag',
             'google_products',
             'google_auth_mode',
@@ -158,7 +162,6 @@ class CustomToolPublicSerializer(serializers.ModelSerializer):
             'is_public',
             'requires_oauth',
             'oauth_provider',
-            'requires_hitl',
             'add_gmail_oauth_flag',
             'google_products',
             'google_auth_mode',

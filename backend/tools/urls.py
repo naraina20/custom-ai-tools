@@ -8,15 +8,21 @@ from .views import (
     MyToolsView,
     GoogleCapabilitiesView,
     SharedUserAssetView,
+    UpdateCustomToolView,
 )
 from .views_agent import (
     AgentRunView,
     AgentDecisionView,
+    AgentHITLInfoView,
 )
 from .views_webhooks import (
     WebhookIngestView,
     UserToolDeployView,
     WebhookJobStatusView,
+    FailedWebhookInfoView,
+    FailedWebhookRetryView,
+    FailedWebhookFileCheckView,
+    FailedWebhookFileSelectView,
 )
 from .views_oauth import (
     GoogleOAuthInitView,
@@ -50,6 +56,13 @@ urlpatterns = [
     path('tools/marketplace/', MarketplaceToolsView.as_view(), name='tools-marketplace'),
     path('tools/my-tools/', MyToolsView.as_view(), name='tools-my-tools'),
     path('tools/deploy/', UserToolDeployView.as_view(), name='tools-deploy'),
+    path('tools/<int:pk>/', UpdateCustomToolView.as_view(), name='tool-update'),
+
+    # Failed Webhook OAuth Reauth & Recovery Endpoints
+    path('tools/failed-webhook/<int:job_id>/', FailedWebhookInfoView.as_view(), name='failed-webhook-info'),
+    path('tools/failed-webhook/<int:job_id>/retry/', FailedWebhookRetryView.as_view(), name='failed-webhook-retry'),
+    path('tools/failed-webhook/<int:job_id>/check-file-access/', FailedWebhookFileCheckView.as_view(), name='failed-webhook-check-file-access'),
+    path('tools/failed-webhook/<int:job_id>/select-file/', FailedWebhookFileSelectView.as_view(), name='failed-webhook-select-file'),
 
     # Google Products Capabilities & Shared Asset Quarantine Endpoints
     path('tools/google-capabilities/', GoogleCapabilitiesView.as_view(), name='google-capabilities'),
@@ -58,6 +71,7 @@ urlpatterns = [
     # Milestone 3: LangGraph Agent & Human-In-The-Loop Execution
     path('agent/run/', AgentRunView.as_view(), name='agent-run'),
     path('agent/decision/', AgentDecisionView.as_view(), name='agent-decision'),
+    path('agent/hitl-info/', AgentHITLInfoView.as_view(), name='agent-hitl-info'),
 
     # Milestone 4: Universal Catch-All Inbound Webhook (supports tool & user secrets)
     path('webhooks/<uuid:webhook_secret>/', WebhookIngestView.as_view(), name='webhook-ingest'),

@@ -33,9 +33,10 @@ class OAuthService:
     GITHUB_TOKEN_URL = GITHUB_TOKEN_URL
 
     @classmethod
-    def get_or_refresh_token(cls, user_id: str, provider: str) -> Tuple[bool, Optional[str], Optional[str]]:
+    def get_or_refresh_token(cls, user_id: str, provider: str, live_verify: bool = False) -> Tuple[bool, Optional[str], Optional[str]]:
         """
         Retrieves a valid access token for the given user and provider.
+        If live_verify is True (for Google), validates the grant live against Google's tokeninfo API.
         If expired, automatically executes the refresh flow.
         
         Returns:
@@ -44,6 +45,13 @@ class OAuthService:
         token_record = UserOAuthToken.objects.filter(user_id=user_id, provider=provider).first()
         if not token_record:
             return False, None, f"No OAuth credentials found for user '{user_id}' with provider '{provider}'."
+
+        # If live verification requested for Google, check against Google tokeninfo endpoint
+        if provider == PROVIDER_GOOGLE and live_verify:
+            is_active, email, scopes, err = cls.verify_and_sync_google_token(token_record)
+            if is_active:
+                return True, token_record.access_token, None
+            return False, None, err or f"Google OAuth authorization was revoked or invalid for user '{user_id}'."
 
         # If token is still valid, return directly
         if not token_record.is_expired():

@@ -28,7 +28,6 @@ class CustomTool(models.Model):
         default='none',
         help_text="Target OAuth provider if authentication is required"
     )
-    requires_hitl = models.BooleanField(default=False, help_text="Human-in-the-loop approval requirement")
     add_gmail_oauth_flag = models.BooleanField(default=False, help_text="Whether tool requires Gmail send authorization")
     google_products = models.JSONField(default=list, blank=True, help_text="Detected Google products involved in tool execution")
     google_auth_mode = models.CharField(
@@ -123,6 +122,14 @@ class FailedWebhookJob(models.Model):
         related_name='failed_jobs',
         help_text="Custom tool associated with the webhook trigger"
     )
+    deployment = models.ForeignKey(
+        'UserToolDeployment',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='failed_jobs',
+        help_text="User tool deployment associated with the failed webhook"
+    )
     payload = models.JSONField(default=dict, help_text="Captured request body")
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='pending_reauth')
     error_message = models.TextField(blank=True, null=True, help_text="Reason for webhook failure")
@@ -203,6 +210,35 @@ class UserToolDeployment(models.Model):
         default=dict,
         blank=True,
         help_text="User configuration e.g. user_email, fallback options, target URL"
+    )
+    requires_hitl = models.BooleanField(
+        default=False,
+        help_text="Whether this specific deployment requires Human-In-The-Loop approval before execution"
+    )
+    EMAIL_SERVICE_CHOICES = [
+        ('none', 'None'),
+        ('gmail', 'Gmail OAuth'),
+        ('google_app_password', 'Google App Password'),
+        ('company_email', 'Company Email / SMTP'),
+        ('platform_default', 'Platform Default'),
+    ]
+    email_service = models.CharField(
+        max_length=50,
+        choices=EMAIL_SERVICE_CHOICES,
+        default='none',
+        help_text="Email delivery service selected by user: gmail (OAuth), google_app_password, company_email, platform_default, none"
+    )
+    google_email = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Google email address for App Password or Gmail sending"
+    )
+    google_app_password = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Google App Password if chosen for SMTP email delivery"
     )
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -311,8 +347,9 @@ class WebhookEventJob(models.Model):
     tool_owner_data = models.JSONField(default=dict, blank=True, help_text="Tool owner profile details")
 
     thread_id = models.CharField(max_length=255, blank=True, default='', help_text="LangGraph thread ID")
-    result = models.JSONField(default=dict, blank=True, help_text="Output result summary from graph engine")
+    result = models.JSONField(default=dict, blank=True, null=True, help_text="Output result summary from graph engine")
     error_message = models.TextField(blank=True, null=True, help_text="Execution failure message if any")
+    hitl_response = models.TextField(blank=True, null=True, help_text="User HITL decision or feedback text")
 
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -381,6 +418,8 @@ class SharedUserAsset(models.Model):
     delegation_type = models.CharField(max_length=50, choices=DELEGATION_TYPE_CHOICES, default='manual_service_account')
     service_account_email = models.CharField(max_length=255, default='narainad308@gmail.com')
     is_verified = models.BooleanField(default=False, db_index=True, help_text="Whether access has been cross-verified against Drive API")
+    is_active = models.BooleanField(default=True, db_index=True, help_text="Whether this file connection is active for the deployment")
+    description = models.TextField(blank=True, default="", help_text="Optional description for what this file is used for in the tool")
     verified_at = models.DateTimeField(null=True, blank=True)
     last_error = models.TextField(blank=True, null=True, help_text="Last verification error if any")
     metadata = models.JSONField(default=dict, blank=True, help_text="Extra asset metadata (size, parents, permissions)")
@@ -392,6 +431,7 @@ class SharedUserAsset(models.Model):
         unique_together = ('user_id', 'google_file_or_folder_id')
         indexes = [
             models.Index(fields=['user_id', 'is_verified']),
+            models.Index(fields=['user_id', 'is_active']),
             models.Index(fields=['google_file_or_folder_id']),
             models.Index(fields=['deployment']),
         ]

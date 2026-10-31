@@ -725,10 +725,17 @@ def get_sheet_planner_context(
         sheet_last_row = sample.get("last_row", 0)
         sheet_title = sample.get("sheet_title", "Sheet1")
 
-        col_instructions = [
-            f"   - Column {idx+1} ('{h}'): place the data corresponding to '{h}'. If no data is available in the payload, use empty string \"\"."
-            for idx, h in enumerate(sheet_headers)
-        ]
+        col_instructions = []
+        for idx, h in enumerate(sheet_headers):
+            h_lower = str(h).lower().strip()
+            if any(term in h_lower for term in ["other detail", "other detial", "extra detail", "extra data", "additional", "notes", "misc"]):
+                col_instructions.append(
+                    f"   - Column {idx+1} ('{h}'): MANDATORY EXTRA DATA COLUMN. Place all remaining/unmapped data, extra attributes, or payload details for this record here. NEVER leave this column empty if extra data exists in the payload!"
+                )
+            else:
+                col_instructions.append(
+                    f"   - Column {idx+1} ('{h}'): place the data corresponding to '{h}'. If no data is available in the payload, use empty string \"\"."
+                )
 
         return f"""
 === TARGET GOOGLE SPREADSHEET SCHEMA ===
@@ -743,10 +750,12 @@ CRITICAL RULES FOR 'write_sheet':
 2. Set 'sheet_title': "{sheet_title}"
 3. Set 'start_row': {sheet_last_row + 1}
 4. Set 'headers': {json.dumps(sheet_headers)}
-5. 'values' MUST be an array of rows, where each row is an array of EXACTLY {len(sheet_headers)} elements matching the headers above:
+5. 'values' MUST be an array of rows, where each row is an array of elements matching the headers:
 {chr(10).join(col_instructions)}
-DO NOT swap columns (e.g. NEVER put email into Name, or name into City!). Each index of each row corresponds strictly to that column header.
-Note : if any input data is not matching with headers we have, you can create a new column with name extra data if there is no column for extra data.
+6. MANDATORY EXTRA DETAILS MAPPING:
+   - If the sheet has an extra/other details column (e.g. 'other details', 'other detials', 'extra data', 'notes'), you MUST pack all unmapped payload fields for each item into that column (e.g. as key-value pairs or text). DO NOT leave it empty ("") when extra data exists.
+   - If there is extra data in the payload and NO related column exists in headers, append a new column titled 'extra data' to headers and add the extra data in that column for each row.
+7. DO NOT swap columns (e.g. NEVER put email into Name, or name into City!). Each index of each row corresponds strictly to that column header.
 """
     except Exception as exc:
         logger.warning("Failed to fetch target sheet schema for planner context: %s", exc)

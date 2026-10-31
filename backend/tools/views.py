@@ -78,8 +78,8 @@ Your goal is to parse a natural language tool description into a clean, minimal,
 4. NORMAL TOOL SPECIFICATION (when fallback_triggered is false):
    - "title": Concise, professional name for the tool.
    - "description": The tool description MUST PRESERVE the user's exact original prompt verbatim. NEVER overwrite or replace the description with bulleted task points or task lists.
-   - "requires_oauth": true if any Google product or third-party OAuth is required, else false.
-   - "oauth_provider": "google" if any Google product or Gmail is used; "github" for GitHub; otherwise "none".
+   - "requires_oauth": true ONLY if Google products other than Gmail are required (e.g. Sheets, Drive, Docs, Forms, Calendar, Meet) or third-party OAuth (GitHub). Keep FALSE if only Gmail or email dispatch is used, or if no OAuth is required (sending email via Gmail OAuth vs App Password is a choice made by the user when deploying).
+   - "oauth_provider": "google" if non-Gmail Google products (Sheets, Drive, etc.) are used; "github" for GitHub; otherwise "none".
    - "requires_hitl": Keep FALSE by default. Set to TRUE ONLY if human approval / manual review was explicitly requested.
    - "form_schema": Define ONLY up to MAX 3 input properties for user configuration. Supported field types: "string", "number", "boolean". If the tool is driven by an inbound webhook (receives external payload directly at its webhook URL), NEVER create dummy manual input fields like "payload", "webhook_data", or "webhook_response". If no user parameters are required, return {{"type": "object", "properties": {{}}, "required": []}}.
 
@@ -293,12 +293,20 @@ class GenerateSchemaView(APIView):
                 "google_auth_flow_required": "none",
                 "requires_oauth": False,
                 "oauth_provider": "none",
-                "requires_hitl": False,
                 "form_schema": {"type": "object", "properties": {}, "required": []},
             }
+            if "requires_hitl" in generated_data:
+                del generated_data["requires_hitl"]
             for k, v in defaults.items():
                 if k not in generated_data:
                     generated_data[k] = v
+
+            # If detected Google products contain only Gmail (or empty), keep requires_oauth=False on tool level
+            prods = [str(p).lower().strip() for p in (generated_data.get("google_products_detected") or [])]
+            non_gmail_prods = [p for p in prods if p not in ["gmail", "mail", "email", "none", ""]]
+            if not non_gmail_prods and generated_data.get("oauth_provider") == "google":
+                generated_data["requires_oauth"] = False
+                generated_data["oauth_provider"] = "none"
 
             # Always preserve the user's exact original concept prompt as the tool's description
             generated_data["description"] = description.strip()
@@ -507,5 +515,72 @@ class MyToolsView(APIView):
 
         tools = qs.order_by('-created_at')
         serializer = CustomToolSerializer(tools, many=True, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class UpdateCustomToolView(APIView):
+    """
+    PATCH /api/tools/<int:pk>/
+    Allows editing only:
+    1. Tool title (tool name)
+    2. Adding new input fields to form_schema (strictly non-required)
+    """
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk, *args, **kwargs):
+        try:
+            tool = CustomTool.objects.get(pk=pk)
+        except CustomTool.DoesNotExist:
+            return Response({"error": "Tool not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        user_id = getattr(request.user, 'user_id', None) or request.headers.get('X-User-Id')
+        # Check authorization (only author or staff can edit)
+        if tool.author_id and user_id and tool.author_id != user_id and not getattr(request.user, 'is_staff', False):
+            return Response({"error": "You do not have permission to edit this tool."}, status=status.HTTP_403_FORBIDDEN)
+
+        # 1. Update Tool Title if provided
+        new_title = request.data.get('title') or request.data.get('name')
+        if new_title and isinstance(new_title, str) and new_title.strip():
+            tool.title = new_title.strip()
+
+        # 2. Add new input fields (strictly non-required)
+        new_fields = request.data.get('new_fields') or request.data.get('add_fields') or []
+        if isinstance(new_fields, dict):
+            # Convert dictionary format { "field_name": { "type": "string", ... } }
+            new_fields = [
+                {"name": k, **(v if isinstance(v, dict) else {"type": "string"})}
+                for k, v in new_fields.items()
+            ]
+
+        if isinstance(new_fields, list) and new_fields:
+            schema = tool.form_schema or {"type": "object", "properties": {}, "required": []}
+            if not isinstance(schema, dict):
+                schema = {"type": "object", "properties": {}, "required": []}
+            properties = schema.setdefault("properties", {})
+            required_list = schema.setdefault("required", [])
+
+            for f in new_fields:
+                if not isinstance(f, dict):
+                    continue
+                name = str(f.get('name') or f.get('key') or '').strip().lower().replace(" ", "_")
+                if not name:
+                    continue
+                field_type = str(f.get('type') or 'string').lower()
+                field_title = str(f.get('title') or f.get('label') or name.replace("_", " ").title())
+                field_desc = str(f.get('description') or '')
+
+                properties[name] = {
+                    "type": field_type,
+                    "title": field_title,
+                    "description": field_desc,
+                }
+                # STRICT RULE: Must be non-required.
+                if name in required_list:
+                    required_list.remove(name)
+
+            tool.form_schema = schema
+
+        tool.save()
+        serializer = CustomToolSerializer(tool, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 

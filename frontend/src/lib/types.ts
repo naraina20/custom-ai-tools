@@ -20,7 +20,6 @@ export interface CustomTool {
   is_public: boolean;
   requires_oauth: boolean;
   oauth_provider: 'none' | 'google' | 'github';
-  requires_hitl: boolean;
   tasks?: string;
   add_gmail_oauth_flag?: boolean;
   google_products?: string[];
@@ -56,7 +55,6 @@ export interface GeneratedSchemaResponse {
   tasks?: string;
   requires_oauth: boolean;
   oauth_provider: 'none' | 'google' | 'github';
-  requires_hitl: boolean;
   form_schema?: FormSchema;
   api_config?: Record<string, any>;
 }
@@ -93,6 +91,10 @@ export interface UserToolDeployment {
   user_id: string;
   user_webhook_secret: string;
   config_data: Record<string, any>;
+  requires_hitl: boolean;
+  email_service?: string;
+  google_email?: string;
+  google_app_password?: string;
   is_active: boolean;
   created_at: string;
   webhook_url?: string;
@@ -211,4 +213,99 @@ export interface GooglePickerResponse {
   action: 'picked' | 'cancel';
   docs?: GooglePickerDoc[];
 }
+
+export interface DeploymentAssetHistoryItem {
+  id: number;
+  google_file_or_folder_id: string;
+  asset_name?: string;
+  product_name?: string;
+  is_verified?: boolean;
+  is_active?: boolean;
+  description?: string;
+  last_error?: string | null;
+  updated_at?: string;
+}
+
+export interface FailedWebhookInfoResponse {
+  job_id: number;
+  status: string;
+  error_message: string;
+  created_at: string;
+  pending_failed_count?: number;
+  tool: {
+    id: number;
+    title: string;
+    slug: string;
+    description: string;
+    requires_oauth: boolean;
+    oauth_provider: string;
+    add_gmail_oauth_flag?: boolean;
+    google_products: string[];
+    google_auth_mode?: string;
+    tasks?: string;
+  };
+  deployment: {
+    id: number;
+    user_id?: string;
+    user_webhook_secret?: string;
+    config_data: Record<string, any>;
+  } | null;
+  connected_asset: {
+    id: number;
+    google_file_or_folder_id: string;
+    asset_name?: string;
+    asset_type?: string;
+    mime_type?: string;
+    product_name?: string;
+    is_verified?: boolean;
+    is_active?: boolean;
+    description?: string;
+    last_error?: string | null;
+    verified_at?: string | null;
+  } | null;
+  file_history?: DeploymentAssetHistoryItem[];
+  file_access_check?: {
+    performed: boolean;
+    is_accessible: boolean;
+    error?: string | null;
+  };
+  user_id: string;
+}
+
+export interface FailedWebhookFileCheckResponse {
+  success: boolean;
+  is_accessible: boolean;
+  error?: string | null;
+  connected_asset?: FailedWebhookInfoResponse['connected_asset'];
+  file_history?: DeploymentAssetHistoryItem[];
+}
+
+export interface FailedWebhookFileSelectResponse {
+  success: boolean;
+  message: string;
+  connected_asset: FailedWebhookInfoResponse['connected_asset'];
+  file_history: DeploymentAssetHistoryItem[];
+}
+
+
+export interface AgentHITLActionCard {
+  tool: string;
+  title: string;
+  icon: string;
+  description: string;
+  details: Record<string, any>;
+}
+
+export interface AgentHITLInfoResponse {
+  tool_id: number;
+  tool_title: string;
+  thread_id: string;
+  requires_hitl: boolean;
+  approval_status: string;
+  actions: AgentHITLActionCard[];
+  input_data: Record<string, any>;
+  created_at?: string;
+  error?: string;
+}
+
 

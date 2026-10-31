@@ -1,3 +1,4 @@
+from tools.models import WebhookEventJob
 import base64
 import json
 import logging
@@ -32,6 +33,7 @@ from tools.models import (
     SharedUserAsset,
 )
 from tools.services.notification_service import NotificationService
+from tools.services.oauth_service import OAuthService
 from tools.services.google_executor import (
     GoogleExecutorService,
     execute_google_action,
@@ -153,19 +155,28 @@ class DjangoORMCheckpointer(BaseCheckpointSaver):
         checkpoint_ns = str(config["configurable"].get("checkpoint_ns", ""))
         checkpoint_id = str(config["configurable"]["checkpoint_id"])
 
+        write_objs = []
         for idx, (channel, val) in enumerate(writes):
             encoded_val = self._encode_typed(self.serde.dumps_typed(val))
-            LangGraphCheckpointWriteModel.objects.update_or_create(
-                thread_id=thread_id,
-                checkpoint_ns=checkpoint_ns,
-                checkpoint_id=checkpoint_id,
-                task_id=task_id,
-                idx=idx,
-                defaults={
-                    "channel": channel,
-                    "type": encoded_val["type"] if encoded_val else None,
-                    "value": encoded_val,
-                },
+            write_objs.append(
+                LangGraphCheckpointWriteModel(
+                    thread_id=thread_id,
+                    checkpoint_ns=checkpoint_ns,
+                    checkpoint_id=checkpoint_id,
+                    task_id=task_id,
+                    idx=idx,
+                    channel=channel,
+                    type=encoded_val["type"] if encoded_val else None,
+                    value=encoded_val,
+                )
+            )
+
+        if write_objs:
+            LangGraphCheckpointWriteModel.objects.bulk_create(
+                write_objs,
+                update_conflicts=True,
+                update_fields=["channel", "type", "value"],
+                unique_fields=["thread_id", "checkpoint_ns", "checkpoint_id", "task_id", "idx"]
             )
 
     def get_tuple(self, config: RunnableConfig) -> Optional[CheckpointTuple]:
@@ -308,6 +319,7 @@ class AgentState(TypedDict):
     tool_id: int
     tool_slug: str
     user_id: str
+    thread_id: Optional[str]
 
     # Standardized 4 data fields with exact user names & descriptions
     deploy_tool_data: Dict[str, Any]
@@ -387,15 +399,28 @@ def tool_selector_node(state: AgentState) -> Dict[str, Any]:
         # Fallback to data_response if no specific action tools matched
         selected_tools = ["data_response"]
 
-    # 3. Resolve OAuth if required
+    # 3. Resolve OAuth if required (tool requires oauth, google products present, or deployment email_service == 'gmail')
     auth_token = None
-    if tool.requires_oauth and tool.oauth_provider != 'none':
-        token_record = UserOAuthToken.objects.filter(
-            user_id=user_id or tool.author_id,
-            provider=tool.oauth_provider,
-        ).first()
-        if token_record and not token_record.is_expired():
-            auth_token = token_record.access_token
+    has_non_gmail_google = any(
+        str(p).lower().strip() not in ['gmail', 'mail', 'email', 'none', '']
+        for p in (getattr(tool, 'google_products', []) or [])
+    )
+    deploy_email_gmail = (
+        (deploy_tool_data or {}).get("email_service") == "gmail"
+        or (deploy_tool_data or {}).get("email_channel_choice") == "oauth"
+    )
+    needs_oauth_exec = bool(tool.requires_oauth and tool.oauth_provider != 'none') or has_non_gmail_google or deploy_email_gmail
+    target_oauth_provider = tool.oauth_provider if (tool.oauth_provider and tool.oauth_provider != 'none') else 'google'
+
+    if needs_oauth_exec:
+        candidate_uids = [user_id, tool.author_id] if user_id else [tool.author_id]
+        for c_uid in candidate_uids:
+            if not c_uid:
+                continue
+            success, token_val, _ = OAuthService.get_or_refresh_token(user_id=c_uid, provider=target_oauth_provider)
+            if success and token_val:
+                auth_token = token_val
+                break
 
     AppLogger.step(
         "Node 1: Tool Selector",
@@ -596,12 +621,8 @@ Value:
 Generate a structured execution plan for each tool in {json.dumps(selected_tools)}, in the exact same sequence.
 Return an array of plan objects under 'execution_plans'. Each plan object MUST strictly follow the tool's schema and schema-mapping instructions provided above.
 
-'requires_hitl':
-- DEFAULT TO FALSE. Set "requires_hitl" to true ONLY if the user explicitly stated in the AI-Tool description that human approval or human-in-the-loop is required. Otherwise, it MUST be false.
-
 Return ONLY a valid JSON object matching this exact structure:
 {{
-  "requires_hitl": <true|false>,
   "execution_plans": [
     {{
       "tool": "<tool_name>",
@@ -624,7 +645,8 @@ Return ONLY a valid JSON object matching this exact structure:
         )
         data = plan_raw if isinstance(plan_raw, dict) else json.loads(str(plan_raw))
 
-        requires_hitl = tool.requires_hitl or data.get("requires_hitl", False)
+        deploy_tool_data = state.get("deploy_tool_data") or {}
+        requires_hitl = bool(deploy_tool_data.get("requires_hitl", state.get("requires_hitl", False)))
         execution_plans = data.get("execution_plans") or []
         if not isinstance(execution_plans, list) or len(execution_plans) == 0:
             raise GeneralToolsError("LLM planner returned an empty or invalid execution_plans list.")
@@ -791,7 +813,8 @@ def hitl_gatekeeper(state: AgentState) -> Dict[str, Any]:
     if state.get("error"):
         return {"approval_status": "rejected"}
 
-    requires_hitl = state.get("requires_hitl", False)
+    deploy_tool_data = state.get("deploy_tool_data") or {}
+    requires_hitl = bool(deploy_tool_data.get("requires_hitl", state.get("requires_hitl", False)))
     current_status = state.get("approval_status", "pending")
 
     AppLogger.step(
@@ -813,7 +836,7 @@ def hitl_gatekeeper(state: AgentState) -> Dict[str, Any]:
             count = len(p.get("items", []))
             plan_summaries.append(f"{t_name} ({count} items)")
 
-        details = f"Human authorization required for execution plans: {', '.join(plan_summaries) if plan_summaries else 'action execution'}"
+        details = f"Authorization required: {', '.join(plan_summaries) if plan_summaries else 'planned actions'}"
 
         AppLogger.step(
             "Node 3: HITL Gatekeeper",
@@ -821,13 +844,65 @@ def hitl_gatekeeper(state: AgentState) -> Dict[str, Any]:
             {"details": details}
         )
 
+        # Resolve target recipient email for HITL notification
+        deployer_data = state.get("deployer_data") or {}
+        deploy_tool_data = state.get("deploy_tool_data") or {}
+        input_data = state.get("input_data") or {}
+        webhook_data = state.get("webhook_data") or {}
+
+        hitl_email = (
+            deployer_data.get("email")
+            or deploy_tool_data.get("user_email")
+            or deploy_tool_data.get("personal_email")
+            or deploy_tool_data.get("email")
+            or deploy_tool_data.get("google_email")
+            or input_data.get("user_email")
+            or input_data.get("email")
+            or input_data.get("deployer_email")
+            or input_data.get("personal_email")
+        )
+
+        if not hitl_email and isinstance(webhook_data, dict):
+            hitl_email = webhook_data.get("email") or webhook_data.get("user_email") or webhook_data.get("deployer_email")
+
+        if not hitl_email and user_id:
+            try:
+                from tools.models import UserOAuthToken, UserToolDeployment
+                tok = UserOAuthToken.objects.filter(user_id=user_id).exclude(account_email="").first()
+                if tok and tok.account_email:
+                    hitl_email = tok.account_email
+                else:
+                    dep = UserToolDeployment.objects.filter(user_id=user_id, tool_id=tool_id).exclude(google_email="").order_by("-created_at").first()
+                    if dep and dep.google_email:
+                        hitl_email = dep.google_email
+            except Exception:
+                pass
+
+        if not hitl_email and tool and tool.author_id:
+            try:
+                from tools.models import UserOAuthToken
+                tok = UserOAuthToken.objects.filter(user_id=tool.author_id).exclude(account_email="").first()
+                if tok and tok.account_email:
+                    hitl_email = tok.account_email
+            except Exception:
+                pass
+
+        actual_thread_id = state.get("thread_id") or str(uuid.uuid4())
+
+        AppLogger.step(
+            "Node 3: HITL Gatekeeper",
+            f"Execution halted by HITL policy for tool '{tool_title}'. Awaiting approval from {hitl_email or 'system default'}.",
+            {"details": details, "target_email": hitl_email, "thread_id": actual_thread_id}
+        )
+
         NotificationService.broadcast_hitl_notification(
             user_id=user_id,
-            thread_id=state.get("tool_slug", str(uuid.uuid4())),
+            thread_id=actual_thread_id,
             tool_id=tool_id,
             tool_title=tool_title,
             details=details,
             input_data=state.get("input_data", {}),
+            user_email=hitl_email,
         )
 
         return {
@@ -836,6 +911,7 @@ def hitl_gatekeeper(state: AgentState) -> Dict[str, Any]:
             "webhook_data": state.get("webhook_data", {}),
             "deployer_data": state.get("deployer_data", {}),
             "tool_owner_data": state.get("tool_owner_data", {}),
+            "thread_id": actual_thread_id,
             "messages": [
                 {
                     "role": "assistant",
@@ -855,16 +931,14 @@ def hitl_gatekeeper(state: AgentState) -> Dict[str, Any]:
 
 def should_execute(state: AgentState) -> str:
     """
-    Conditional edge router: executes tool only if approval_status == 'approved' or no HITL needed.
+    Conditional edge router:
+    - If graph encountered an unrecoverable error or was rejected: route to "end".
+    - Otherwise: route to "execute" (tool_executor).
+      When requires_hitl is True and approval_status is 'pending', LangGraph will halt
+      at interrupt_before=["tool_executor"] so state is checkpointed and human approval awaited.
     """
-    if state.get("error"):
+    if state.get("error") or state.get("approval_status") == "rejected":
         return "end"
-
-    requires_hitl = state.get("requires_hitl", False)
-    approval_status = state.get("approval_status", "pending")
-
-    if requires_hitl:
-        return "execute" if approval_status == "approved" else "end"
     return "execute"
 
 
@@ -1244,6 +1318,7 @@ class GraphEngine:
             "tool_id": tool_id,
             "tool_slug": tool.slug if tool else "",
             "user_id": eff_user_id,
+            "thread_id": tid,
             "deploy_tool_data": deploy_tool_data,
             "webhook_data": webhook_data,
             "deployer_data": deployer_data,
@@ -1252,7 +1327,7 @@ class GraphEngine:
             "user_details": user_details,
             "user_tool_data": user_tool_data,
             "input_data": input_data or {},
-            "requires_hitl": False,
+            "requires_hitl": bool((deploy_tool_data or {}).get("requires_hitl", False)),
             "approval_status": "pending",
             "execution_result": None,
             "auth_token": None,
@@ -1311,7 +1386,8 @@ class GraphEngine:
 
         # If interrupted before tool_executor
         if state_snapshot.next and "tool_executor" in state_snapshot.next:
-            requires_hitl = state_snapshot.values.get("requires_hitl", False)
+            deploy_data = state_snapshot.values.get("deploy_tool_data") or {}
+            requires_hitl = bool(deploy_data.get("requires_hitl", state_snapshot.values.get("requires_hitl", False)))
             approval_status = state_snapshot.values.get("approval_status", "pending")
 
             if requires_hitl and approval_status != "approved":
@@ -1382,13 +1458,14 @@ class GraphEngine:
         return {
             "status": "completed",
             "thread_id": tid,
-            "result": output.get("execution_result"),
+            "result": output.get("execution_result") or {},
         }
 
     @classmethod
-    def resume_flow(cls, thread_id: str, decision: str) -> Dict[str, Any]:
+    def resume_flow(cls, thread_id: str, decision: str, feedback: Optional[str] = None) -> Dict[str, Any]:
         """
-        Resumes an interrupted graph execution using decision ('approve' or 'reject').
+        Resumes an interrupted graph execution using decision ('approve' or 'reject') and optional user feedback.
+        If feedback is provided, refines execution_plans with the LLM before executing tool_executor.
         """
         app, checkpointer = cls.get_app()
         config = {"configurable": {"thread_id": thread_id}}
@@ -1402,14 +1479,97 @@ class GraphEngine:
             }
 
         decision_clean = decision.lower().strip()
-        AppLogger.step("GraphEngine", f"Resuming workflow for thread {thread_id} with decision: '{decision_clean}'")
+        hitl_resp_val = feedback.strip() if (feedback and feedback.strip()) else ("approved" if decision_clean in ["approve", "approved"] else "rejected")
+        AppLogger.step("GraphEngine", f"Resuming workflow for thread {thread_id} with decision: '{decision_clean}', feedback present: {bool(feedback)}")
 
-        if decision_clean == "approve":
-            app.update_state(config, {"approval_status": "approved"})
+        def _persist_job_state(new_status: str, result_val: Any = None, err_val: str = None):
+            jobs = WebhookEventJob.objects.filter(thread_id=thread_id)
+            for j in jobs:
+                j.status = new_status
+                j.hitl_response = hitl_resp_val
+                wh_data = j.webhook_data if isinstance(j.webhook_data, dict) else {}
+                wh_data["hitl_response"] = hitl_resp_val
+                j.webhook_data = wh_data
+                if result_val is not None:
+                    j.result = result_val
+                if err_val is not None:
+                    j.error_message = err_val
+                j.save()
+
+        if decision_clean in ["approve", "approved"]:
+            current_plans = state_snapshot.values.get("execution_plans", [])
+            effective_plans = current_plans
+
+            # If user provided refinement feedback, adjust plans using LLM
+            if feedback and feedback.strip():
+                try:
+                    company = getattr(settings, 'COMPANY_NAME', 'NexusAI')
+                    refinement_prompt = f"""You are the Master Agent Plan Refiner for {company}.
+The user has reviewed the prepared execution plans and provided the following feedback:
+
+=== CURRENT EXECUTION PLANS ===
+{json.dumps(current_plans, indent=2)}
+
+=== USER FEEDBACK ===
+"{feedback.strip()}"
+
+=== RULES ===
+1. Return the same JSON format with updated plans under 'execution_plans'.
+2. Modify, remove, or adjust ONLY what the user's feedback specifies (e.g. adjust email recipient/body or remove a specific plan item).
+3. If feedback is ambiguous or broadly approves, keep execution_plans unchanged and set status to 'approved'.
+4. If feedback broadly declines or requests changes too drastic beyond adjusting plan items, set status to 'rejected'.
+
+Return ONLY valid JSON matching this schema:
+{{
+  "status": "<approved|rejected>",
+  "execution_plans": [ ... ],
+  "notes": "<Brief explanation of adjustments made>"
+}}
+"""
+                    res = LLMRouter.route_completion(
+                        messages=[
+                            {"role": "system", "content": "You are an agent plan refiner. Return valid JSON only."},
+                            {"role": "user", "content": refinement_prompt}
+                        ],
+                        json_mode=True,
+                        temperature=0.1,
+                        tier="reasoning",
+                    )
+                    data = res if isinstance(res, dict) else json.loads(str(res))
+                    if data.get("status") == "rejected":
+                        app.update_state(config, {"approval_status": "rejected"})
+                        _persist_job_state(
+                            new_status='failed',
+                            err_val=data.get("notes") or "Execution declined based on reviewer feedback."
+                        )
+                        return {
+                            "status": "rejected",
+                            "thread_id": thread_id,
+                            "decision": "rejected",
+                            "message": data.get("notes") or "Execution declined based on reviewer feedback.",
+                        }
+                    if isinstance(data.get("execution_plans"), list) and len(data["execution_plans"]) > 0:
+                        effective_plans = data["execution_plans"]
+                        AppLogger.step("GraphEngine", f"Execution plans refined successfully via user feedback for thread {thread_id}")
+                except Exception as ref_err:
+                    logger.warning("Feedback plan refinement failed, proceeding with original plans: %s", ref_err)
+
+            app.update_state(config, {
+                "approval_status": "approved",
+                "execution_plans": effective_plans,
+            })
+
             try:
                 close_old_connections()
                 resumed_output = app.invoke(None, config=config)
                 AppLogger.step("GraphEngine", f"Resumed execution completed successfully for thread {thread_id}")
+
+                # Update associated WebhookEventJob with hitl_response and result
+                _persist_job_state(
+                    new_status='completed',
+                    result_val=resumed_output.get("execution_result") or {}
+                )
+
                 return {
                     "status": "completed",
                     "thread_id": thread_id,
@@ -1424,6 +1584,10 @@ class GraphEngine:
                     exc=exc,
                     execution_context={"thread_id": thread_id, "decision": decision_clean},
                 )
+                _persist_job_state(
+                    new_status='failed',
+                    err_val=str(exc)
+                )
                 return {
                     "status": "error",
                     "thread_id": thread_id,
@@ -1431,6 +1595,10 @@ class GraphEngine:
                 }
         else:
             app.update_state(config, {"approval_status": "rejected", "error": "Execution was rejected by user."})
+            _persist_job_state(
+                new_status='failed',
+                err_val="Execution was successfully rejected and will not run."
+            )
             AppLogger.step("GraphEngine", f"Workflow execution rejected for thread {thread_id}")
             return {
                 "status": "rejected",

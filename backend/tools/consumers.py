@@ -17,10 +17,8 @@ class NotificationConsumer(AsyncWebsocketConsumer):
         self.user_id = self.scope['url_route']['kwargs'].get('user_id', 'anonymous')
         self.group_name = f"user_{self.user_id}"
 
-        # Join personal user notification group
+        # Join personal user notification group (single canonical group to avoid duplicate deliveries)
         await self.channel_layer.group_add(self.group_name, self.channel_name)
-        if self.user_id.startswith("user_"):
-            await self.channel_layer.group_add(self.user_id, self.channel_name)
         await self.accept()
 
         logger.info("WebSocket connected for user: %s (channel: %s)", self.user_id, self.channel_name)
@@ -36,8 +34,6 @@ class NotificationConsumer(AsyncWebsocketConsumer):
     async def disconnect(self, close_code):
         if hasattr(self, 'group_name'):
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
-        if hasattr(self, 'user_id') and self.user_id.startswith("user_"):
-            await self.channel_layer.group_discard(self.user_id, self.channel_name)
         logger.info("WebSocket disconnected for user: %s (code: %s)", getattr(self, 'user_id', 'unknown'), close_code)
 
     async def receive(self, text_data=None, bytes_data=None):

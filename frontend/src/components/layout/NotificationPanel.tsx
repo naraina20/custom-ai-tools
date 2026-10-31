@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
+import Link from 'next/link';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNotifications } from '@/lib/NotificationContext';
 import { AppNotification } from '@/lib/types';
@@ -219,6 +220,25 @@ export function NotificationBell() {
                           {item.details}
                         </p>
                       )}
+
+                      {/* Direct CTA button to HITL Approval Page */}
+                      {item.type === 'HITL_REQUEST' && (
+                        <div className="mt-2.5 pt-2 border-t border-slate-800/80 flex items-center justify-between">
+                          <Link
+                            href={item.data?.approval_url || `/tools/hitl-review?thread_id=${item.thread_id}${item.data?.tool_id ? `&tool_id=${item.data.tool_id}` : ''}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              markAsRead(item.id);
+                              setIsOpen(false);
+                            }}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-amber-500 to-indigo-600 hover:from-amber-400 hover:to-indigo-500 text-white text-[11px] font-bold shadow-md shadow-amber-500/10 transition-all hover:scale-[1.02] active:scale-[0.98]"
+                          >
+                            <span>Review & Authorize</span>
+                            <ExternalLink className="w-3 h-3" />
+                          </Link>
+                          <span className="text-[10px] text-amber-400/90 font-mono">Action required</span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))
@@ -278,6 +298,19 @@ export function NotificationBell() {
                 <p className="text-[11px] text-slate-300 mt-1 line-clamp-2 leading-relaxed">
                   {latestToast.details}
                 </p>
+              )}
+
+              {latestToast.type === 'HITL_REQUEST' && (
+                <div className="mt-2.5 pt-2 border-t border-slate-800/80 flex items-center justify-between">
+                  <Link
+                    href={latestToast.data?.approval_url || `/tools/hitl-review?thread_id=${latestToast.thread_id}${latestToast.data?.tool_id ? `&tool_id=${latestToast.data.tool_id}` : ''}`}
+                    onClick={() => dismissToast()}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-amber-500 to-indigo-600 hover:from-amber-400 hover:to-indigo-500 text-white text-[11px] font-bold shadow-md shadow-amber-500/10 transition-all hover:scale-[1.02] active:scale-[0.98]"
+                  >
+                    <span>Review & Authorize</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </Link>
+                </div>
               )}
             </div>
           </motion.div>

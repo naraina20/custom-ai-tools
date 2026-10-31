@@ -9,6 +9,7 @@ import { ToolCard } from '@/components/tools/ToolCard';
 import { CreateToolModal } from '@/components/tools/CreateToolModal';
 import { ToolExecuteModal } from '@/components/tools/ToolExecuteModal';
 import { ToolDeployModal } from '@/components/tools/ToolDeployModal';
+import { EditToolModal } from '@/components/tools/EditToolModal';
 import { apiClient } from '@/lib/api-client';
 import { CustomTool, UserToolDeployment } from '@/lib/types';
 import {
@@ -22,6 +23,9 @@ import {
   AlertCircle,
   LogIn,
   Share2,
+  GitBranch,
+  KeyRound,
+  Filter,
 } from 'lucide-react';
 
 export default function ToolsDashboardPage() {
@@ -42,10 +46,14 @@ export default function ToolsDashboardPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Filter by capability: 'all' | 'webhook' | 'oauth'
+  const [filterCapability, setFilterCapability] = useState<'all' | 'webhook' | 'oauth'>('all');
+
   // Modals state
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [executingTool, setExecutingTool] = useState<CustomTool | null>(null);
   const [deployingTool, setDeployingTool] = useState<CustomTool | null>(null);
+  const [editingTool, setEditingTool] = useState<CustomTool | null>(null);
 
   // Debounce search input (300ms)
   useEffect(() => {
@@ -129,17 +137,35 @@ export default function ToolsDashboardPage() {
     );
   }, [userDeployments]);
 
-  // Compute displayed tools based on active tab
+  // Compute displayed tools based on active tab & capability filters
   const displayedTools = useMemo(() => {
+    let result = tools;
     if (activeTab === 'deployed_by_me') {
-      return tools.filter((t) => deployedToolIdSet.has(t.id));
+      result = result.filter((t) => deployedToolIdSet.has(t.id));
     }
-    return tools;
-  }, [activeTab, tools, deployedToolIdSet]);
+    if (filterCapability === 'webhook') {
+      result = result.filter((t) => {
+        const text = `${t.title} ${t.description} ${t.tasks || ''}`.toLowerCase();
+        return !!t.webhook_secret || text.includes('webhook');
+      });
+    } else if (filterCapability === 'oauth') {
+      result = result.filter((t) => {
+        if (!t.requires_oauth || t.oauth_provider === 'none') return false;
+        if (t.oauth_provider === 'google') {
+          const prods = (t.google_products || []).map((p) => p.toLowerCase());
+          const isOnlyGmail =
+            (prods.length === 0 || (prods.length === 1 && prods[0] === 'gmail')) && !!t.add_gmail_oauth_flag;
+          if (isOnlyGmail) return false;
+        }
+        return true;
+      });
+    }
+    return result;
+  }, [activeTab, tools, deployedToolIdSet, filterCapability]);
 
   // Metrics computation:
   const totalTools = tools.length;
-  const hitlCount = tools.filter((t) => t.requires_hitl).length;
+  const hitlCount = userDeployments.filter((d) => d.requires_hitl).length;
 
   // Do not count a tool in oauth connected if it's just gmail!
   const oauthCount = tools.filter((t) => {
@@ -309,6 +335,58 @@ export default function ToolsDashboardPage() {
           </div>
         </div>
 
+        {/* Capability Filters Row */}
+        <div className="flex items-center gap-2 pt-1 flex-wrap">
+          <span className="text-[11px] font-medium text-slate-400 flex items-center gap-1.5 mr-1">
+            <Filter className="w-3.5 h-3.5 text-slate-400" />
+            <span>Filter:</span>
+          </span>
+
+          <button
+            onClick={() => setFilterCapability('all')}
+            className={`px-3 py-1 rounded-lg text-xs font-medium transition-all ${
+              filterCapability === 'all'
+                ? 'bg-indigo-600 text-white shadow-sm'
+                : 'bg-slate-900/70 text-slate-400 hover:text-white border border-slate-800'
+            }`}
+          >
+            All Types
+          </button>
+
+          <button
+            onClick={() => setFilterCapability('webhook')}
+            className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium transition-all ${
+              filterCapability === 'webhook'
+                ? 'bg-cyan-600 text-white shadow-sm'
+                : 'bg-slate-900/70 text-cyan-400 hover:text-cyan-300 border border-slate-800'
+            }`}
+          >
+            <GitBranch className="w-3 h-3" />
+            <span>Webhook</span>
+          </button>
+
+          <button
+            onClick={() => setFilterCapability('oauth')}
+            className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium transition-all ${
+              filterCapability === 'oauth'
+                ? 'bg-purple-600 text-white shadow-sm'
+                : 'bg-slate-900/70 text-purple-400 hover:text-purple-300 border border-slate-800'
+            }`}
+          >
+            <KeyRound className="w-3 h-3" />
+            <span>OAuth Connected</span>
+          </button>
+
+          {filterCapability !== 'all' && (
+            <button
+              onClick={() => setFilterCapability('all')}
+              className="text-[10px] text-slate-500 hover:text-slate-300 font-mono ml-1"
+            >
+              Reset Filter
+            </button>
+          )}
+        </div>
+
         {/* Content Body */}
         {error ? (
           <div className="p-6 rounded-2xl bg-rose-500/10 border border-rose-500/25 flex flex-col items-center justify-center text-center space-y-3">
@@ -400,6 +478,7 @@ export default function ToolsDashboardPage() {
                 userDeployments={userDeployments}
                 onRun={handleRunTool}
                 onDeploy={handleDeployTool}
+                onEdit={(t) => setEditingTool(t)}
               />
             ))}
           </div>
@@ -430,6 +509,15 @@ export default function ToolsDashboardPage() {
         onClose={() => setDeployingTool(null)}
         onDeploySuccess={() => {
           fetchUserDeployments();
+        }}
+      />
+
+      <EditToolModal
+        tool={editingTool}
+        isOpen={!!editingTool}
+        onClose={() => setEditingTool(null)}
+        onSuccess={(updated) => {
+          setTools((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
         }}
       />
     </AppShell>

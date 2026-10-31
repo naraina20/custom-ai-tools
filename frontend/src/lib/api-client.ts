@@ -11,6 +11,10 @@ import {
   SharedUserAsset,
   GoogleOAuthStatusResponse,
   GooglePickerConfigResponse,
+  FailedWebhookInfoResponse,
+  FailedWebhookFileCheckResponse,
+  FailedWebhookFileSelectResponse,
+  AgentHITLInfoResponse,
 } from './types';
 
 export class ApiError extends Error {
@@ -142,7 +146,6 @@ export const apiClient = {
     form_schema: FormSchema;
     requires_oauth?: boolean;
     oauth_provider?: string;
-    requires_hitl?: boolean;
     is_public?: boolean;
     author_id?: string;
     add_gmail_oauth_flag?: boolean;
@@ -159,6 +162,10 @@ export const apiClient = {
     tool_id: number;
     user_id: string;
     config_data?: Record<string, any>;
+    requires_hitl?: boolean;
+    email_service?: string;
+    google_email?: string;
+    google_app_password?: string;
   }): Promise<UserToolDeployment> {
     return fetchFromProxy<UserToolDeployment>('tools/deploy/', {
       method: 'POST',
@@ -278,6 +285,72 @@ export const apiClient = {
 
   async getGooglePickerConfig(userId: string): Promise<GooglePickerConfigResponse> {
     return fetchFromProxy<GooglePickerConfigResponse>(`oauth/google/picker-config/?user_id=${encodeURIComponent(userId)}`);
+  },
+
+  // --- Failed Webhook Recovery & OAuth Re-auth API ---
+  async getFailedWebhookInfo(jobId: number | string): Promise<FailedWebhookInfoResponse> {
+    return fetchFromProxy<FailedWebhookInfoResponse>(`tools/failed-webhook/${jobId}/`);
+  },
+
+  async checkFailedWebhookFileAccess(jobId: number | string): Promise<FailedWebhookFileCheckResponse> {
+    return fetchFromProxy<FailedWebhookFileCheckResponse>(`tools/failed-webhook/${jobId}/check-file-access/`, {
+      method: 'POST',
+    });
+  },
+
+  async selectFailedWebhookFile(
+    jobId: number | string,
+    fileData: { google_file_id: string; asset_name?: string; mime_type?: string; description?: string }
+  ): Promise<FailedWebhookFileSelectResponse> {
+    return fetchFromProxy<FailedWebhookFileSelectResponse>(`tools/failed-webhook/${jobId}/select-file/`, {
+      method: 'POST',
+      body: JSON.stringify(fileData),
+    });
+  },
+
+  async retryFailedWebhook(
+    jobId: number | string,
+    assetData?: { google_file_id?: string; asset_name?: string; mime_type?: string; description?: string }
+  ): Promise<{ success: boolean; message: string; job_id?: number }> {
+    return fetchFromProxy(`tools/failed-webhook/${jobId}/retry/`, {
+      method: 'POST',
+      body: JSON.stringify(assetData || {}),
+    });
+  },
+
+  // --- Human-In-The-Loop (HITL) Review & Decision API ---
+  async getAgentHITLInfo(threadId: string, toolId?: number | string): Promise<AgentHITLInfoResponse> {
+    const params = new URLSearchParams({ thread_id: threadId });
+    if (toolId) params.append('tool_id', String(toolId));
+    return fetchFromProxy<AgentHITLInfoResponse>(`agent/hitl-info/?${params.toString()}`);
+  },
+
+  async submitHITLDecision(payload: {
+    tool_id?: number | string;
+    deployment_id?: number | string;
+    thread_id: string;
+    approved: boolean;
+    feedback?: string;
+    user_id?: string;
+  }): Promise<AgentRunResponse> {
+    return fetchFromProxy<AgentRunResponse>('agent/run/', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  // --- Custom Tool Update API ---
+  async updateCustomTool(
+    toolId: number | string,
+    payload: {
+      title?: string;
+      new_fields?: Array<{ name: string; type?: string; title?: string; description?: string }>;
+    }
+  ): Promise<CustomTool> {
+    return fetchFromProxy<CustomTool>(`tools/${toolId}/`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    });
   },
 };
 

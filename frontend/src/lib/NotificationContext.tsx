@@ -100,15 +100,26 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
           };
 
           setNotifications((prev) => {
+            // Deduplicate if identical type and thread_id received within 15 seconds
+            if (
+              newNotif.thread_id &&
+              prev.some(
+                (n) =>
+                  n.type === newNotif.type &&
+                  n.thread_id === newNotif.thread_id &&
+                  Math.abs(Date.now() - new Date(n.timestamp).getTime()) < 15000
+              )
+            ) {
+              return prev;
+            }
             const nextList = [newNotif, ...prev].slice(0, 50);
             try {
               localStorage.setItem(`nexus_notifications_${currentUserId}`, JSON.stringify(nextList));
             } catch (err) {}
+            // Trigger toast alert only if not duplicate
+            setLatestToast(newNotif);
             return nextList;
           });
-
-          // Trigger toast alert for incoming event
-          setLatestToast(newNotif);
         } catch (err) {
           console.warn('[Notification Gateway] Error parsing WebSocket message:', err);
         }

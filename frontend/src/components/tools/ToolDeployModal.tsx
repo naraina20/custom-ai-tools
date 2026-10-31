@@ -23,6 +23,7 @@ import {
   PlusCircle,
   Lock,
   FolderCheck,
+  GitBranch,
 } from 'lucide-react';
 
 interface ToolDeployModalProps {
@@ -79,6 +80,7 @@ export function ToolDeployModal({ tool, isOpen, onClose, onDeploySuccess }: Tool
   const [grantedProducts, setGrantedProducts] = useState<string[]>([]);
   const [grantedScopes, setGrantedScopes] = useState<string[]>([]);
 
+  const [requiresHitl, setRequiresHitl] = useState(false);
   const [isDeploying, setIsDeploying] = useState(false);
   const [deployment, setDeployment] = useState<UserToolDeployment | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -122,6 +124,7 @@ export function ToolDeployModal({ tool, isOpen, onClose, onDeploySuccess }: Tool
       setEmailChannel('platform_default');
       setAppEmail('');
       setAppPassword('');
+      setRequiresHitl(false);
     }
   }, [tool, isOpen]);
 
@@ -222,8 +225,15 @@ export function ToolDeployModal({ tool, isOpen, onClose, onDeploySuccess }: Tool
         ? appEmail.trim()
         : (emailChannel === 'oauth' ? (oauthAccountEmail || user?.primaryEmailAddress?.emailAddress || '') : (user?.primaryEmailAddress?.emailAddress || ''));
 
+      const mappedEmailService = emailChannel === 'oauth'
+        ? 'gmail'
+        : emailChannel === 'app_password'
+        ? 'google_app_password'
+        : (hasGmail ? 'platform_default' : 'none');
+
       const configData: Record<string, any> = {
         ...configValues,
+        email_service: mappedEmailService,
         email_channel_choice: emailChannel,
         file_access_choice: hasFileProducts ? fileAccessChoice : 'none',
         file_products: fileProducts,
@@ -245,6 +255,10 @@ export function ToolDeployModal({ tool, isOpen, onClose, onDeploySuccess }: Tool
         tool_id: tool.id,
         user_id: currentUserId,
         config_data: configData,
+        requires_hitl: requiresHitl,
+        email_service: mappedEmailService,
+        google_email: effectiveEmail,
+        google_app_password: appPassword.trim(),
       });
 
       setDeployment(res);
@@ -260,7 +274,12 @@ export function ToolDeployModal({ tool, isOpen, onClose, onDeploySuccess }: Tool
 
   const host = typeof window !== 'undefined' ? window.location.origin : '';
   const webhookSecret = deployment?.user_webhook_secret;
-  const webhookUrl = webhookSecret ? `${host}/api/proxy/webhooks/${webhookSecret}/` : '';
+  const activeWebhookUrl = webhookSecret
+    ? `${host}/api/proxy/webhooks/${webhookSecret}/`
+    : tool?.webhook_secret
+    ? `${host}/api/proxy/webhooks/${tool.webhook_secret}/`
+    : '';
+  const webhookUrl = activeWebhookUrl;
 
   const handleCopy = () => {
     if (!webhookUrl) return;
@@ -328,6 +347,47 @@ export function ToolDeployModal({ tool, isOpen, onClose, onDeploySuccess }: Tool
                   {tool.description}
                 </p>
               </div>
+
+              {/* Inbound Webhook Endpoint */}
+              {activeWebhookUrl && (
+                <div className="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-mono text-cyan-400 uppercase tracking-wider flex items-center gap-1.5">
+                      <GitBranch className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>Inbound Webhook Endpoint</span>
+                    </span>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-300 border border-cyan-500/20">
+                      Webhook Trigger Ready
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 bg-slate-900 p-2 rounded-lg border border-slate-800">
+                    <code className="text-xs font-mono text-cyan-300 flex-1 truncate select-all">
+                      {activeWebhookUrl}
+                    </code>
+                    <button
+                      type="button"
+                      onClick={handleCopy}
+                      className="p-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white text-xs transition-colors shrink-0 flex items-center gap-1 border border-slate-700/60"
+                      title="Copy Webhook URL"
+                    >
+                      {copied ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-emerald-400" />
+                          <span className="text-[10px] text-emerald-400">Copied</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" />
+                          <span className="text-[10px]">Copy</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-400">
+                    External tools or webhooks can invoke this automation by sending HTTP POST requests to this URL.
+                  </p>
+                </div>
+              )}
 
               {/* Dynamic Input Properties from Schema */}
               {Object.keys(properties).length > 0 && (
@@ -777,6 +837,47 @@ export function ToolDeployModal({ tool, isOpen, onClose, onDeploySuccess }: Tool
                 </div>
               )}
 
+              {/* Human-in-the-Loop (HITL) Deployment Gatekeeper */}
+              <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 space-y-2">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 pr-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                        <ShieldCheck className="w-4 h-4 text-amber-400" />
+                        <span>Human-in-the-Loop (HITL) Gatekeeper</span>
+                      </span>
+                      <span
+                        className={`text-[10px] font-mono px-2 py-0.5 rounded border transition-colors ${
+                          requiresHitl
+                            ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 font-bold'
+                            : 'bg-slate-800 text-slate-400 border-slate-700 font-medium'
+                        }`}
+                      >
+                        {requiresHitl ? 'ENABLED' : 'DISABLED'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 mt-1">
+                      When enabled for this deployment, incoming webhooks and automated workflow runs will pause before executing external actions (e.g. sending emails, writing spreadsheets), sending you an approval notification.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={requiresHitl}
+                    onClick={() => setRequiresHitl((prev) => !prev)}
+                    className={`relative inline-flex h-5 w-10 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                      requiresHitl ? 'bg-amber-500' : 'bg-slate-800 border-slate-700'
+                    }`}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                        requiresHitl ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                </div>
+              </div>
+
               {error && (
                 <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/25 flex items-center gap-2 text-rose-300 text-xs">
                   <AlertCircle className="w-4 h-4 shrink-0" />
@@ -865,6 +966,12 @@ export function ToolDeployModal({ tool, isOpen, onClose, onDeploySuccess }: Tool
                 <div className="flex justify-between">
                   <span className="text-slate-400">Email Dispatch:</span>
                   <span className="text-slate-200 capitalize">{emailChannel.replace('_', ' ')}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Human-In-The-Loop:</span>
+                  <span className={`font-semibold ${deployment.requires_hitl ? 'text-amber-300' : 'text-slate-300'}`}>
+                    {deployment.requires_hitl ? 'Enabled' : 'Disabled'}
+                  </span>
                 </div>
                 {Object.entries(deployment.config_data || {}).map(([k, v]) => (
                   <div key={k} className="flex justify-between text-[11px]">

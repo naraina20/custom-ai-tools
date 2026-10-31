@@ -11,6 +11,9 @@ import {
   Layers,
   GitBranch,
   CheckCircle2,
+  Globe,
+  Lock,
+  Edit2,
 } from 'lucide-react';
 
 interface ToolCardProps {
@@ -18,9 +21,10 @@ interface ToolCardProps {
   userDeployments?: UserToolDeployment[];
   onRun: (tool: CustomTool) => void;
   onDeploy: (tool: CustomTool) => void;
+  onEdit?: (tool: CustomTool) => void;
 }
 
-export function ToolCard({ tool, userDeployments = [], onRun, onDeploy }: ToolCardProps) {
+export function ToolCard({ tool, userDeployments = [], onRun, onDeploy, onEdit }: ToolCardProps) {
   const propertyCount = Object.keys(tool.form_schema?.properties || {}).length;
 
   // Filter deployments specific to this tool
@@ -51,35 +55,53 @@ export function ToolCard({ tool, userDeployments = [], onRun, onDeploy }: ToolCa
       <div>
         {/* Header Badges & Icon */}
         <div className="flex items-start justify-between gap-3 mb-3">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500/20 via-purple-500/10 to-transparent border border-indigo-500/30 flex items-center justify-center text-indigo-400 group-hover:text-indigo-300 group-hover:scale-105 transition-all">
+          <div className="flex items-center gap-3 min-w-0 flex-1">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500/20 via-purple-500/10 to-transparent border border-indigo-500/30 flex items-center justify-center text-indigo-400 group-hover:text-indigo-300 group-hover:scale-105 transition-all shrink-0">
               <Wrench className="w-5 h-5" />
             </div>
-            <div>
-              <h3 className="font-semibold text-sm text-slate-100 group-hover:text-white transition-colors">
+            <div className="min-w-0 flex-1">
+              <h3 className="font-semibold text-sm text-slate-100 group-hover:text-white transition-colors truncate" title={tool.title}>
                 {tool.title}
               </h3>
-              <p className="text-[11px] font-mono text-slate-400">
+              <p className="text-[11px] font-mono text-slate-400 truncate">
                 {tool.slug}
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
+            {onEdit && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onEdit(tool);
+                }}
+                title="Edit Tool Name & Add Inputs"
+                className="p-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-white border border-slate-700/60 transition-colors"
+              >
+                <Edit2 className="w-3.5 h-3.5" />
+              </button>
+            )}
+
             {isDeployed && (
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
-                <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                Deployed{matchingDeployments.length > 1 ? ` (${matchingDeployments.length})` : ''}
+              <span
+                title={`Deployed by you (${matchingDeployments.length} instance${matchingDeployments.length > 1 ? 's' : ''})`}
+                className="p-1.5 rounded-lg bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center justify-center cursor-help"
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
               </span>
             )}
+
             <span
-              className={`text-[10px] font-medium px-2 py-0.5 rounded-full border ${
+              title={tool.is_public ? 'Marketplace Tool (Public)' : 'Private Tool'}
+              className={`p-1.5 rounded-lg border flex items-center justify-center cursor-help ${
                 tool.is_public
-                  ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                  ? 'bg-indigo-500/15 text-indigo-400 border-indigo-500/30'
                   : 'bg-slate-800 text-slate-400 border-slate-700/60'
               }`}
             >
-              {tool.is_public ? 'Marketplace' : 'Private'}
+              {tool.is_public ? <Globe className="w-3.5 h-3.5" /> : <Lock className="w-3.5 h-3.5" />}
             </span>
           </div>
         </div>
@@ -110,7 +132,7 @@ export function ToolCard({ tool, userDeployments = [], onRun, onDeploy }: ToolCa
           </span>
 
           {/* HITL badge */}
-          {tool.requires_hitl && (
+          {matchingDeployments.some((d) => d.requires_hitl) && (
             <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-300 border border-amber-500/25">
               <ShieldAlert className="w-3 h-3 text-amber-400" />
               HITL Approval

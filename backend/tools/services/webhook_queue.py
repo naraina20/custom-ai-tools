@@ -93,7 +93,7 @@ class WebhookQueue:
             if resp_status == 'pending_human_approval':
                 job.status = 'pending_hitl'
                 job.thread_id = thread_id
-                job.result = execution_response
+                job.result = execution_response if isinstance(execution_response, dict) else {}
                 job.save(update_fields=['status', 'thread_id', 'result', 'updated_at'])
                 AppLogger.step(
                     "WebhookQueue",
@@ -103,7 +103,7 @@ class WebhookQueue:
             elif resp_status == 'completed':
                 job.status = 'completed'
                 job.thread_id = thread_id
-                job.result = execution_response.get('result', {})
+                job.result = execution_response.get('result') or {}
                 job.save(update_fields=['status', 'thread_id', 'result', 'updated_at'])
                 AppLogger.step(
                     "WebhookQueue",
@@ -174,3 +174,178 @@ class WebhookQueue:
                 connections.close_all()
             except Exception:
                 pass
+
+    @classmethod
+    def enqueue_resume_hitl(cls, job_id: int, thread_id: str, decision: str, feedback: str = "") -> None:
+        """
+        Dispatches background execution for resuming a paused HITL WebhookEventJob.
+        """
+        executor = cls.get_executor()
+        executor.submit(cls._run_resume_safe, job_id, thread_id, decision, feedback)
+
+    @classmethod
+    def _run_resume_safe(cls, job_id: int, thread_id: str, decision: str, feedback: str = "") -> None:
+        # Ensure a clean thread-local DB connection for this background worker
+        try:
+            connection.close()
+            connections.close_all()
+        except Exception:
+            pass
+
+        try:
+            job = WebhookEventJob.objects.select_related('tool', 'deployment').filter(id=job_id).first()
+            if not job:
+                AppLogger.error("WebhookQueue", f"Job #{job_id} not found in database for HITL resumption.")
+                return
+
+            hitl_resp_val = feedback.strip() if (feedback and feedback.strip()) else ("approved" if decision.lower().strip() in ["approve", "approved"] else "rejected")
+            job.status = 'processing'
+            job.hitl_response = hitl_resp_val
+            wh_data = job.webhook_data if isinstance(job.webhook_data, dict) else {}
+            wh_data["hitl_response"] = hitl_resp_val
+            job.webhook_data = wh_data
+            job.save(update_fields=['status', 'hitl_response', 'webhook_data', 'updated_at'])
+
+            AppLogger.step(
+                "WebhookQueue",
+                f"Worker resuming Job #{job.id} for '{job.tool.title}' with decision '{decision}'..."
+            )
+
+            # Send immediate on-app socket update that execution is resuming
+            NotificationService.broadcast_step_progress(
+                user_id=job.user_id,
+                tool_title=job.tool.title,
+                step_name="HITL Gatekeeper",
+                details=f"Decision '{decision}' received. Resuming workflow execution...",
+                status="processing",
+                step_index=3,
+                total_steps=4
+            )
+
+            # Resume the LangGraph execution flow
+            execution_response = GraphEngine.resume_flow(
+                thread_id=thread_id,
+                decision=decision,
+                feedback=feedback
+            )
+
+            resp_status = execution_response.get('status')
+
+            if resp_status == 'completed':
+                job.status = 'completed'
+                job.thread_id = thread_id
+                job.hitl_response = hitl_resp_val
+                wh_data = job.webhook_data if isinstance(job.webhook_data, dict) else {}
+                wh_data["hitl_response"] = hitl_resp_val
+                job.webhook_data = wh_data
+                job.result = execution_response.get('result') or {}
+                job.save(update_fields=['status', 'thread_id', 'hitl_response', 'webhook_data', 'result', 'updated_at'])
+                AppLogger.step(
+                    "WebhookQueue",
+                    f"Job #{job.id} for '{job.tool.title}' COMPLETED successfully after HITL resume."
+                )
+
+                # Send on-app socket update for tool executor
+                NotificationService.broadcast_step_progress(
+                    user_id=job.user_id,
+                    tool_title=job.tool.title,
+                    step_name="Tool Executor",
+                    details="All workflow actions completed successfully.",
+                    status="completed",
+                    step_index=4,
+                    total_steps=4
+                )
+
+                # Broadcast completion notification
+                NotificationService.broadcast_webhook_completion(
+                    user_id=job.user_id,
+                    tool_title=job.tool.title,
+                    status='completed',
+                    summary=(job.result or {}).get('summary', f"Workflow execution completed for '{job.tool.title}'."),
+                    result=job.result,
+                    user_email=job.deployer_data.get('email')
+                )
+
+            elif resp_status == 'rejected':
+                msg = execution_response.get('message', 'Execution was declined by user.')
+                job.status = 'failed'
+                job.thread_id = thread_id
+                job.hitl_response = hitl_resp_val
+                wh_data = job.webhook_data if isinstance(job.webhook_data, dict) else {}
+                wh_data["hitl_response"] = hitl_resp_val
+                job.webhook_data = wh_data
+                job.error_message = msg
+                job.save(update_fields=['status', 'thread_id', 'hitl_response', 'webhook_data', 'error_message', 'updated_at'])
+                AppLogger.step("WebhookQueue", f"Job #{job.id} for '{job.tool.title}' was rejected during HITL.")
+
+                NotificationService.broadcast_step_progress(
+                    user_id=job.user_id,
+                    tool_title=job.tool.title,
+                    step_name="HITL Gatekeeper",
+                    details=f"Workflow was rejected: {msg}",
+                    status="failed",
+                    step_index=3,
+                    total_steps=4
+                )
+
+                NotificationService.broadcast_webhook_completion(
+                    user_id=job.user_id,
+                    tool_title=job.tool.title,
+                    status='failed',
+                    summary=f"Execution rejected: {msg}",
+                    error_message=msg,
+                    user_email=job.deployer_data.get('email')
+                )
+
+            else:
+                err_msg = str(execution_response.get('error', execution_response.get('message', 'Resumed execution failed.')))
+                job.status = 'failed'
+                job.thread_id = thread_id
+                job.error_message = err_msg
+                job.save(update_fields=['status', 'thread_id', 'error_message', 'updated_at'])
+                AppLogger.error("WebhookQueue", f"Job #{job.id} for '{job.tool.title}' failed after HITL resume: {err_msg}")
+
+                NotificationService.broadcast_step_progress(
+                    user_id=job.user_id,
+                    tool_title=job.tool.title,
+                    step_name="Tool Executor",
+                    details=f"Execution error: {err_msg}",
+                    status="failed",
+                    step_index=4,
+                    total_steps=4
+                )
+
+                NotificationService.broadcast_webhook_completion(
+                    user_id=job.user_id,
+                    tool_title=job.tool.title,
+                    status='failed',
+                    summary=f"Execution error on '{job.tool.title}': {err_msg}",
+                    error_message=err_msg,
+                    user_email=job.deployer_data.get('email')
+                )
+
+        except Exception as exc:
+            AppLogger.error("WebhookQueue", f"Fatal worker exception on Job #{job_id} during resume: {exc}", exc=exc)
+            try:
+                job = WebhookEventJob.objects.filter(id=job_id).first()
+                if job:
+                    job.status = 'failed'
+                    job.error_message = str(exc)
+                    job.save(update_fields=['status', 'error_message', 'updated_at'])
+                    NotificationService.broadcast_webhook_completion(
+                        user_id=job.user_id,
+                        tool_title=job.tool.title,
+                        status='failed',
+                        summary=f"Worker crashed during resumed execution: {str(exc)}",
+                        error_message=str(exc),
+                        user_email=job.deployer_data.get('email')
+                    )
+            except Exception:
+                pass
+        finally:
+            try:
+                connection.close()
+                connections.close_all()
+            except Exception:
+                pass
+

@@ -21,16 +21,16 @@ class WebhookEventJobAdmin(admin.ModelAdmin):
 
 @admin.register(CustomTool)
 class CustomToolAdmin(admin.ModelAdmin):
-    list_display = ('title', 'slug', 'author_id', 'is_public', 'requires_oauth', 'oauth_provider', 'requires_hitl', 'created_at')
-    list_filter = ('is_public', 'requires_oauth', 'oauth_provider', 'requires_hitl')
+    list_display = ('title', 'slug', 'author_id', 'is_public', 'requires_oauth', 'oauth_provider', 'created_at')
+    list_filter = ('is_public', 'requires_oauth', 'oauth_provider')
     search_fields = ('title', 'description', 'author_id', 'slug')
     readonly_fields = ('slug', 'webhook_secret', 'created_at', 'updated_at')
 
 
 @admin.register(UserToolDeployment)
 class UserToolDeploymentAdmin(admin.ModelAdmin):
-    list_display = ('tool', 'user_id', 'user_webhook_secret', 'is_active', 'created_at')
-    list_filter = ('is_active', 'tool')
+    list_display = ('tool', 'user_id', 'requires_hitl', 'user_webhook_secret', 'is_active', 'created_at')
+    list_filter = ('is_active', 'requires_hitl', 'tool')
     search_fields = ('user_id', 'tool__title', 'user_webhook_secret')
     readonly_fields = ('user_webhook_secret', 'created_at', 'updated_at')
 
@@ -53,8 +53,8 @@ class UserOAuthTokenAdmin(admin.ModelAdmin):
 
 @admin.register(FailedWebhookJob)
 class FailedWebhookJobAdmin(admin.ModelAdmin):
-    list_display = ('tool', 'status', 'created_at', 'updated_at')
-    list_filter = ('status', 'tool')
+    list_display = ('tool', 'deployment', 'status', 'created_at', 'updated_at')
+    list_filter = ('status', 'tool', 'deployment')
     search_fields = ('tool__title', 'error_message')
     readonly_fields = ('created_at', 'updated_at')
 
